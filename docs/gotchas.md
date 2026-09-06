@@ -31,6 +31,39 @@ se borraban** de `Ventas`, generando duplicados silenciosos mes a mes.
 
 **Fix:** ambos lados usan `"AAAA/MM"` como formato canónico de período.
 
+**Ojo:** ese fix (v13) resolvió solo la mitad del problema. Ver el punto 2b.
+
+## 2b. `getValues()` devuelve Date reales, no texto — el bug de duplicados siguió vivo hasta v14
+
+**Síntoma:** idéntico al del punto 2 (ventas copiadas a `Historico Ventas`
+pero nunca borradas de `Ventas`), pero *después* de haber aplicado el fix de
+la v13. Parecía que el fix no había tomado.
+
+**Causa:** la v13 hacía `String(celda)` y matcheaba contra dos regex, ISO y
+`DD/MM/AAAA`. Pero una celda formateada como fecha **no devuelve texto**:
+`getValues()` devuelve un objeto `Date`. Y eso pasa siempre, porque cuando el
+frontend escribe `"12/08/2026"` con `appendRow`, Sheets la convierte a `Date`
+sola. `String(unDate)` da:
+
+```
+Wed Aug 12 2026 00:00:00 GMT-0300 (Argentina Standard Time)
+```
+
+que no matchea ninguno de los dos regex → el período quedaba vacío → la fila
+nunca se borraba. Silencioso, sin error.
+
+**La pista que lo delata:** si el frontend recibe fechas como
+`"2026-08-12T03:00:00.000Z"`, es porque la celda es un `Date` real y
+`JSON.stringify` lo serializó a ISO. O sea: ver ISO-con-hora en el frontend
+es la prueba de que el backend está recibiendo `Date`, no strings.
+
+**Fix (v14):** `periodoDeFecha_()` en el backend resuelve el caso `Date`
+**antes** de intentar cualquier regex. Toda lectura de fecha desde la
+planilla tiene que pasar por ahí — nunca `String(celda).match(...)` directo.
+
+**Regla general:** en el backend, asumir siempre `Date`; en el frontend,
+asumir siempre string (llega por JSON) y normalizar con `normFechaPuntos()`.
+
 ## 3. Apps Script con errores de sintaxis que rompen TODO el backend
 
 Un archivo `.gs` con una sola línea rota (ej: `/ comentario` con una sola
