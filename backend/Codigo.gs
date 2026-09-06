@@ -1,6 +1,10 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v13 — corrige comparación de período AAAA/MM vs DD/MM en archivado de ventas (SISTEMA NÚCLEO)
-//  CORRIGE DOS ERRORES DE SINTAXIS DE LA v11:
+//  POKERSTORE — APPS SCRIPT BACKEND v14 — el archivado de ventas ahora reconoce
+//  celdas con Date real (SISTEMA NÚCLEO)
+//  v14: periodoDeFecha_() maneja Date | ISO | DD/MM/AAAA. La v13 solo matcheaba
+//       texto, y como las celdas de fecha son Date reales, las ventas se copiaban
+//       a "Historico Ventas" pero nunca se borraban de "Ventas" → duplicados.
+//  v13 corrigió dos errores de sintaxis de la v11:
 //    1) La primera línea tenía UNA sola barra "/" en vez de "//"
 //    2) La función obtenerCarpeta_() quedó sin cerrar al final
 //  Libro Diario col G = Proveedor · Historico col H = Proveedor
@@ -31,7 +35,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v13 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v14 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -185,21 +189,11 @@ function handleAction(b) {
       }
 
       // Borrar las ventas del mes de la hoja Ventas activa (de abajo hacia arriba)
-      // v13: acepta fecha ISO ("2026-08-12T03:00:00.000Z" o "2026-08-12")
-      // y formato argentino ("12/08/2026"), y arma siempre "AAAA/MM" para
-      // comparar contra b.periodo (que el frontend manda como "AAAA/MM").
+      // El período de cada venta se calcula con periodoDeFecha_(), que maneja
+      // los tres formatos que puede devolver la hoja (Date real, ISO, argentino).
       var ventasActuales = ventasSheet.getDataRange().getValues();
       for (var w = ventasActuales.length - 1; w >= 1; w--) {
-        var fechaVenta = String(ventasActuales[w][0]).trim();
-        if (!fechaVenta) continue;
-        var mesAnioVenta = '';
-        var m1 = fechaVenta.match(/^(\d{4})-(\d{2})-(\d{2})/);       // ISO
-        var m2 = fechaVenta.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); // DD/MM/AAAA
-        if (m1) {
-          mesAnioVenta = m1[1] + '/' + m1[2];
-        } else if (m2) {
-          mesAnioVenta = m2[3] + '/' + (m2[2].length === 1 ? '0' + m2[2] : m2[2]);
-        }
+        var mesAnioVenta = periodoDeFecha_(ventasActuales[w][0]);
         if (mesAnioVenta && mesAnioVenta === b.periodo) {
           ventasSheet.deleteRow(w + 1);
         }
@@ -251,6 +245,38 @@ function handleAction(b) {
   }
 
   return { ok: false, error: 'Acción desconocida: ' + b.action };
+}
+
+// Devuelve el período "AAAA/MM" de una fecha de la planilla, o '' si no se puede leer.
+//
+// IMPORTANTE: getValues() devuelve un objeto Date real (no texto) cuando la celda
+// está formateada como fecha, que es el caso normal — al escribir "12/08/2026" con
+// appendRow, Sheets la convierte en Date automáticamente. Ese caso hay que
+// resolverlo ANTES de intentar cualquier regex: String(unDate) da
+// "Wed Aug 12 2026 00:00:00 GMT-0300 (...)", que no matchea ni ISO ni DD/MM/AAAA
+// y hacía que la venta nunca se borrara de la hoja activa (duplicados mes a mes).
+function periodoDeFecha_(valor) {
+  if (!valor && valor !== 0) return '';
+
+  // Caso 1: la celda es un Date real (el más común)
+  if (Object.prototype.toString.call(valor) === '[object Date]') {
+    if (isNaN(valor.getTime())) return '';
+    var mes = valor.getMonth() + 1;
+    return valor.getFullYear() + '/' + (mes < 10 ? '0' + mes : String(mes));
+  }
+
+  var s = String(valor).trim();
+  if (!s) return '';
+
+  // Caso 2: texto ISO ("2026-08-12" o "2026-08-12T03:00:00.000Z")
+  var m1 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m1) return m1[1] + '/' + m1[2];
+
+  // Caso 3: texto argentino ("12/08/2026")
+  var m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m2) return m2[3] + '/' + (m2[2].length === 1 ? '0' + m2[2] : m2[2]);
+
+  return '';
 }
 
 function getSheetData(ss, name) {
