@@ -1732,7 +1732,11 @@ function previewUSD(){
 }
 
 async function registrarUSD(){
-  const fecha = document.getElementById('usd-fecha').value || today();
+  // usd-fecha es <input type="date"> → .value ya viene en ISO (AAAA-MM-DD).
+  // El fallback tiene que ser todayISO(), no today(): today() devuelve el
+  // formato argentino y hacía que el mismo campo escribiera dos formatos
+  // distintos según si el usuario tocaba o no la fecha.
+  const fecha = document.getElementById('usd-fecha').value || todayISO();
   const op    = document.getElementById('usd-op').value;
   const usd   = parseFloat(document.getElementById('usd-monto').value)||0;
   const cot   = parseFloat(document.getElementById('usd-cotiz').value)||0;
@@ -2100,7 +2104,9 @@ function previewCanje(){
 }
 
 async function registrarCanje(){
-  const fecha = document.getElementById('cj-fecha').value || today();
+  // cj-fecha es <input type="date"> → mismo caso que registrarUSD(): el
+  // fallback va en ISO para que el campo escriba siempre el mismo formato.
+  const fecha = document.getElementById('cj-fecha').value || todayISO();
   const cl    = document.getElementById('cj-cuenta').value;
   const pn    = document.getElementById('cj-producto').value;
   const cant  = parseFloat(document.getElementById('cj-cantidad').value)||1;
@@ -3386,7 +3392,6 @@ async function confirmarArqueo(){
     const periodo = hoy.getFullYear()+'/'+String(hoy.getMonth()+1).padStart(2,'0');
     
     // Ventas del mes actual a archivar
-    const mesActual = String(hoy.getMonth()+1).padStart(2,'0') + '/' + hoy.getFullYear();
     const mesActualISO2 = hoy.getFullYear()+'-'+String(hoy.getMonth()+1).padStart(2,'0');
     const ventasDelMes = ventas.filter(v => {
       const f = normFechaPuntos(v.fecha);
