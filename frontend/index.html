@@ -204,9 +204,10 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
     <div id="v-carrito-items"></div>
     <div class="form-row" id="v-add-item-row" style="background:var(--bg2);padding:10px;border-radius:var(--radius);border:1px dashed var(--border2);margin-bottom:8px;position:relative">
       <div class="form-group" style="flex:2;position:relative">
-        <label>Producto <span style="font-size:10px;color:var(--text3);font-weight:400">(buscá en stock)</span></label>
-        <input type="text" id="v-prod-input" placeholder="Escribí para buscar..." autocomplete="off"
-          oninput="filtrarProductoStock(this.value)" onfocus="filtrarProductoStock(this.value)">
+        <label>Producto <span style="font-size:10px;color:var(--text3);font-weight:400">(buscá o escaneá el código)</span></label>
+        <input type="text" id="v-prod-input" placeholder="Escribí o escaneá..." autocomplete="off"
+          oninput="filtrarProductoStock(this.value)" onfocus="filtrarProductoStock(this.value)"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();procesarEntradaVenta();}">
         <div id="v-producto-dropdown" style="display:none;position:absolute;z-index:200;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius);max-height:200px;overflow-y:auto;width:100%;box-shadow:0 4px 12px rgba(0,0,0,0.12);top:100%;left:0"></div>
       </div>
       <div class="form-group" style="max-width:90px"><label>Cant.</label><input type="number" id="v-prod-cantidad" placeholder="1" value="1" min="1"></div>
@@ -215,6 +216,7 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
         <button class="btn-secondary" onclick="agregarItemCarrito()" style="white-space:nowrap">+ Agregar ítem</button>
       </div>
     </div>
+    <div id="v-scan-aviso"></div>
     <div class="form-row">
       <div class="form-group" style="flex:1">
         <label>Monto total $ <span style="font-size:10px;color:var(--text3);font-weight:400">(se calcula solo o editá manual)</span></label>
@@ -1165,7 +1167,8 @@ async function loadAll(intento) {
         stock:    parseFloat(r[2])||0,
         costo:    parseFloat(r[3])||0,
         precio:   parseFloat(r[4])||0,
-        minstock: parseFloat(r[5])||5
+        minstock: parseFloat(r[5])||5,
+        codigos:  String(r[6]==null?'':r[6]).split(',').map(s=>s.trim()).filter(Boolean)
       })).filter(p => p.nombre);
     } else { productos = []; }
 
@@ -1429,8 +1432,18 @@ function filtrarProductoStock(q) {
   dd.style.display = 'block';
 }
 
-function seleccionarProductoParaCarrito(idx, matches) {
+async function seleccionarProductoParaCarrito(idx, matches) {
   const p = matches[idx];
+  if(codigoPendienteVenta){
+    const cod = codigoPendienteVenta;
+    codigoPendienteVenta = null;
+    document.getElementById('v-prod-input').value = '';
+    document.getElementById('v-producto-dropdown').style.display = 'none';
+    try { await guardarCodigo(p.nombre, cod); await loadAll(); }
+    catch(e){ avisoVentaScan(`No se pudo guardar el código: ${e.message}`, 'warn'); return; }
+    sumarProductoAVenta(productos.find(x=>x.nombre===p.nombre) || p, `código ${cod} asociado`);
+    return;
+  }
   productoSeleccionado = p;
   document.getElementById('v-prod-input').value = p.nombre;
   document.getElementById('v-producto-dropdown').style.display = 'none';
@@ -1446,9 +1459,13 @@ document.addEventListener('click', e => {
 function agregarItemCarrito() {
   const nombre   = document.getElementById('v-prod-input').value.trim();
   const cantidad = parseFloat(document.getElementById('v-prod-cantidad').value)||1;
-  const precio   = parseFloat(document.getElementById('v-prod-precio').value)||0;
   if(!nombre) { toast('Buscá y seleccioná un producto','err'); return; }
-  carrito.push({ nombre, cantidad, precio, productoObj: productoSeleccionado });
+  // Se resuelve por el texto que quedó en el campo: productoSeleccionado puede ser
+  // de una elección anterior y descontaba stock del producto equivocado.
+  const obj = productoPorNombre(nombre);
+  const precio   = parseFloat(document.getElementById('v-prod-precio').value) || (obj ? obj.precio : 0) || 0;
+  if(!obj) toast(`"${nombre}" no está en Stock: la venta se registra pero no descuenta stock`, 'err');
+  carrito.push({ nombre: obj ? obj.nombre : nombre, cantidad, precio, productoObj: obj });
   productoSeleccionado = null;
   document.getElementById('v-prod-input').value = '';
   document.getElementById('v-prod-cantidad').value = '1';
@@ -1458,6 +1475,90 @@ function agregarItemCarrito() {
   if(totalAuto > 0) document.getElementById('v-monto').value = totalAuto;
   renderCarrito();
 }
+
+function productoPorNombre(nombre){
+  const n = String(nombre||'').trim().toLowerCase();
+  if(productoSeleccionado && productoSeleccionado.nombre.trim().toLowerCase()===n) return productoSeleccionado;
+  return productos.find(p=>p.nombre.trim().toLowerCase()===n) || null;
+}
+
+// ── ESCANEO EN VENTAS ─────────────────────────────────────────────────────────
+let codigoPendienteVenta = null;
+
+// Enter en el campo Producto: puede ser un código escaneado o un nombre tipeado
+function procesarEntradaVenta(){
+  const inp = document.getElementById('v-prod-input');
+  const txt = inp.value.trim();
+  if(!txt) return;
+  const porCodigo = productoDeCodigo(txt);
+  if(porCodigo){ inp.value=''; filtrarProductoStock(''); sumarProductoAVenta(porCodigo); return; }
+  const exacto = productoPorNombre(txt);
+  const ql = txt.toLowerCase();
+  const matches = exacto ? [exacto] : productos.filter(p=>p.nombre.toLowerCase().includes(ql));
+  if(matches.length===0 && pareceCodigo(txt)){
+    inp.value=''; filtrarProductoStock('');
+    codigoPendienteVenta = txt;
+    avisoVentaScan(`🏷 Código nuevo <code>${txt}</code>. Buscá el producto en el campo de arriba y elegilo: queda asociado para las próximas ventas.
+      <button class="btn-sm" onclick="codigoPendienteVenta=null;avisoVentaScan('')">Cancelar</button>`, 'warn');
+    inp.focus();
+    return;
+  }
+  // Con un código pendiente, elegir el producto (click o Enter) lo asocia
+  if(matches.length===1 && (codigoPendienteVenta || !exacto)){ seleccionarProductoParaCarrito(0, matches); return; }
+  if(exacto){ agregarItemCarrito(); return; }
+  toast(matches.length ? 'Elegí el producto de la lista' : 'No hay ningún producto con ese nombre', 'err');
+}
+
+function pareceCodigo(t){ return /^\S{6,}$/.test(t) && /\d/.test(t); }
+
+function sumarProductoAVenta(p, nota){
+  const precio = p.precio || 0;
+  const item = carrito.find(i=>i.productoObj && i.productoObj.nombre===p.nombre && i.precio===precio);
+  if(item) item.cantidad++;
+  else carrito.push({ nombre:p.nombre, cantidad:1, precio, productoObj:p });
+  const total = carrito.reduce((s,i)=>s+(i.precio*i.cantidad),0);
+  if(total > 0) document.getElementById('v-monto').value = total;
+  renderCarrito();
+  const enCarrito = carrito.filter(i=>i.productoObj && i.productoObj.nombre===p.nombre).reduce((s,i)=>s+i.cantidad,0);
+  const avisos = [];
+  if(nota) avisos.push(nota);
+  if(!precio) avisos.push('no tiene precio en Stock, cargá el monto a mano');
+  if(enCarrito > p.stock) avisos.push(`stock en sistema: ${p.stock}`);
+  avisoVentaScan(`✓ ${p.nombre} (${enCarrito} en la venta)${avisos.length?' — '+avisos.join(' · '):''}`, avisos.length && !nota ? 'warn' : 'ok');
+  document.getElementById('v-prod-input').focus();
+}
+
+function avisoVentaScan(msg, tipo){
+  const box = document.getElementById('v-scan-aviso');
+  if(!box) return;
+  if(!msg){ box.innerHTML=''; return; }
+  const clase = tipo==='ok' ? 'alert-ok' : 'alert-warn';
+  box.innerHTML = `<div class="alert ${clase}" style="margin-bottom:8px">${msg}</div>`;
+  if(tipo==='ok') setTimeout(()=>{ if(box.innerHTML.includes(msg.slice(0,20))) box.innerHTML=''; }, 3000);
+}
+
+// El escáner "tipea" muy rápido y termina con Enter. Si llega un código así sin
+// ningún campo activo, se manda al campo de escaneo de la pestaña actual.
+let scanBuffer = '', scanUltimaTecla = 0;
+document.addEventListener('keydown', e=>{
+  const el = document.activeElement;
+  if(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.tagName==='SELECT' || el.isContentEditable)) return;
+  const ahora = Date.now();
+  if(ahora - scanUltimaTecla > 80) scanBuffer = '';
+  scanUltimaTecla = ahora;
+  if(e.key !== 'Enter'){ if(e.key.length===1) scanBuffer += e.key; return; }
+  const cod = scanBuffer; scanBuffer = '';
+  if(cod.length < 6) return;
+  if(currentTab==='ventas'){
+    e.preventDefault();
+    document.getElementById('v-prod-input').value = cod;
+    procesarEntradaVenta();
+  } else if(currentTab==='stock' && document.getElementById('escaneo-box').style.display!=='none'){
+    e.preventDefault();
+    document.getElementById('sc-codigo').value = cod;
+    procesarEscaneo();
+  }
+});
 
 function quitarItemCarrito(idx) {
   carrito.splice(idx, 1);
@@ -2144,23 +2245,19 @@ async function registrarCanje(){
 }
 
 // ── ESCANEO DE CÓDIGO DE BARRAS ────────────────────────────────────────────
-// La asociación código→producto se guarda en el Libro Diario con quien='codigos'
-// (mismo criterio que el fondo USD y los puntos: no toca las cajas ni el Apps Script).
-//   desc = nombre del producto · proveedor = código de barras · monto = 0
+// Los códigos viven en la hoja Stock (col G, varios por producto separados por
+// coma). El escáner USB funciona como teclado: tipea el código y aprieta Enter.
 
 let carritoScan = [];      // [{nombre, cantidad}]
 let codigoPendiente = null;
 
-function codigosTodos(){
-  return movimientos.concat(historico||[]).filter(m=>m.quien==='codigos');
-}
 function productoDeCodigo(cod){
   const c = String(cod).trim();
-  const hit = codigosTodos().find(m=>String(m.proveedor).trim()===c);
-  return hit ? hit.desc : null;
+  return c ? (productos.find(p=>p.codigos.includes(c)) || null) : null;
 }
-function codigosDeProducto(nombre){
-  return codigosTodos().filter(m=>m.desc===nombre).map(m=>String(m.proveedor).trim());
+async function guardarCodigo(nombre, cod){
+  const r = await apiCall({action:'asociarCodigo', nombre, codigo:cod});
+  if(!r || !r.ok) throw new Error((r && r.error) || 'No se pudo guardar el código');
 }
 
 function toggleEscaneo(){
@@ -2180,13 +2277,9 @@ function procesarEscaneo(){
   const inp = document.getElementById('sc-codigo');
   const cod = String(inp.value||'').trim();
   if(!cod) return;
-  const nombre = productoDeCodigo(cod);
-  if(nombre){
-    const prod = productos.find(p=>p.nombre===nombre);
-    if(!prod){
-      avisoScan(`El código ${cod} apunta a "${nombre}", que ya no está en Stock.`, 'warn');
-      focoCodigo(); return;
-    }
+  const prod = productoDeCodigo(cod);
+  if(prod){
+    const nombre = prod.nombre;
     const item = carritoScan.find(i=>i.nombre===nombre);
     if(item) item.cantidad++;
     else carritoScan.push({nombre, cantidad:1});
@@ -2258,9 +2351,7 @@ async function asociarCodigo(nombre){
   codigoPendiente = null;
   document.getElementById('sc-asociar').innerHTML='';
   try{
-    await apiCall({action:'addMovimiento', fecha:today(),
-      desc:nombre, cat:'Codigo barras', quien:'codigos', tipo:'cobro',
-      monto:0, proveedor:cod});
+    await guardarCodigo(nombre, cod);
     await loadAll();
     // Ya asociado: lo sumamos al carrito automáticamente
     const item = carritoScan.find(i=>i.nombre===nombre);
@@ -2268,7 +2359,7 @@ async function asociarCodigo(nombre){
     avisoScan(`✓ Código ${cod} asociado a ${nombre} y agregado`, 'ok');
     renderEscaneo();
   } catch(e){
-    avisoScan('No se pudo guardar la asociación. Probá de nuevo.', 'warn');
+    avisoScan(`No se pudo guardar el código: ${e.message}`, 'warn');
   }
   focoCodigo();
 }
@@ -2458,7 +2549,8 @@ async function confirmarEscaneo(){
 }
 
 function verCodigos(){
-  const lista = codigosTodos();
+  const lista = productos.flatMap(p=>p.codigos.map(c=>({codigo:c, nombre:p.nombre})));
+  const sinCodigo = productos.filter(p=>p.codigos.length===0).length;
   const box = document.getElementById('sc-aviso');
   if(lista.length===0){
     box.innerHTML = `<div class="alert alert-info" style="margin-bottom:8px">Todavía no hay códigos asociados. Escaneá uno y elegí el producto.</div>`;
@@ -2466,17 +2558,22 @@ function verCodigos(){
   }
   box.innerHTML = `
     <div class="alert alert-info" style="display:block;margin-bottom:8px">
-      <div style="font-weight:700;margin-bottom:6px">🏷 ${lista.length} código(s) asociado(s)</div>
+      <div style="font-weight:700;margin-bottom:6px">🏷 ${lista.length} código(s) asociado(s) · ${sinCodigo} producto(s) sin código</div>
       <div style="max-height:220px;overflow-y:auto">
-      ${lista.map(m=>{
-        const idx = movimientos.findIndex(x=>x.quien==='codigos' && String(x.proveedor)===String(m.proveedor) && x.desc===m.desc);
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px">
-          <span><code>${m.proveedor}</code> → ${m.desc}</span>
-          ${idx>=0?`<button class="btn-sm" onclick="delMovimiento(${idx})">🗑</button>`:'<span style="font-size:10px;color:var(--text3)">archivado</span>'}
-        </div>`;}).join('')}
+      ${lista.map(x=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px">
+          <span><code>${x.codigo}</code> → ${x.nombre}</span>
+          <button class="btn-sm" onclick="quitarCodigoUI('${x.codigo.replace(/'/g,"\\'")}')">🗑</button>
+        </div>`).join('')}
       </div>
       <div style="margin-top:8px"><button class="btn-sm" onclick="document.getElementById('sc-aviso').innerHTML=''">Cerrar</button></div>
     </div>`;
+}
+async function quitarCodigoUI(cod){
+  if(!confirm(`¿Quitar el código ${cod}?`)) return;
+  const r = await apiCall({action:'quitarCodigo', codigo:cod});
+  if(!r || !r.ok){ toast((r && r.error) || 'No se pudo quitar el código', 'err'); return; }
+  await loadAll();
+  verCodigos();
 }
 
 // ── HELPERS DE CAJA Y RETIROS ───────────────────────────────────────────────
@@ -2499,7 +2596,7 @@ function retirosSocio(quien){
 // ── LIBRO DIARIO ──────────────────────────────────────────────────────────────
 function renderDiario(){
   // El fondo USD se lleva aparte: no entra en los totales ni en la tabla en pesos
-  const movs = movimientos.map((m,i)=>({...m,_i:i})).filter(m=>m.quien!=='usd' && m.quien!=='puntos' && m.quien!=='codigos');
+  const movs = movimientos.map((m,i)=>({...m,_i:i})).filter(m=>m.quien!=='usd' && m.quien!=='puntos');
   const ingresos = movs.filter(m=>m.tipo==='cobro').reduce((s,m)=>s+m.monto,0);
   const egresos  = movs.filter(m=>m.tipo==='gasto').reduce((s,m)=>s+m.monto,0);
   const saldoG = saldoCaja('guille');

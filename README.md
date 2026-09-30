@@ -61,15 +61,22 @@ No hay servidor propio ni base de datos tradicional. Son tres piezas separadas:
   en el frontend como referencia — es la función a reusar, no reinventarla.
 
 - **Namespacing por `quien` en el Libro Diario**: para features que no deben
-  tocar las cajas en pesos de Guille/Juampi (fondo en dólares, puntos de
-  fidelización, asociaciones de código de barras), se usa el mismo Libro
-  Diario pero con `quien` en un valor especial (`'usd'`, `'puntos'`,
-  `'codigos'`). El cálculo de saldo de caja filtra por `quien==='guille'` o
-  `'juampi'`, así que estos movimientos quedan invisibles para las cajas y
-  para los totales del mes. Ver `docs/gotchas.md` para el detalle de cada uno.
+  tocar las cajas en pesos de Guille/Juampi (fondo en dólares, canjes de
+  puntos de fidelización), se usa el mismo Libro Diario pero con `quien` en
+  un valor especial (`'usd'`, `'puntos'`). El cálculo de saldo de caja filtra
+  por `quien==='guille'` o `'juampi'`, así que estos movimientos quedan
+  invisibles para las cajas y para los totales del mes.
 
-- **Formato de período para el arqueo**: el frontend manda `periodo` como
-  `"AAAA/MM"` (ej: `"2026/08"`). El backend arma el mes/año de cada venta y
-  compara contra ese string — tienen que coincidir en formato exacto.
+- **Códigos de barras**: viven en la hoja `Stock`, columna G (`Codigo`), como
+  texto y separados por coma si un producto tiene varios. Se asocian solos:
+  al escanear un código desconocido (en Ventas o en el escaneo de Stock) la
+  app pide elegir el producto y llama a `asociarCodigo`. El escáner USB
+  funciona como teclado (tipea el código + Enter); si no hay ningún campo
+  activo, la app igual captura el código en las pestañas Ventas y Stock.
+
+- **Período del arqueo**: `"AAAA/MM"` como texto, elegido en el modal (el
+  cierre se hace a principio del mes siguiente). Las ventas no se archivan:
+  los puntos de La Liga se calculan desde la hoja `Ventas`. Ver
+  `docs/gotchas.md` #8 y #9.
 
 Ver `docs/gotchas.md` para el historial de bugs ya resueltos y por qué.

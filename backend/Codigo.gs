@@ -1,6 +1,8 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v16 — el cierre de mes ya no archiva ventas
+//  POKERSTORE — APPS SCRIPT BACKEND v17 — códigos de barras en la hoja Stock
 //  (SISTEMA NÚCLEO)
+//  v17: asociarCodigo / quitarCodigo guardan los códigos en Stock col G (texto,
+//       varios separados por coma) en vez de filas 'codigos' en el Libro Diario.
 //  v16: arqueoMes solo archiva el Libro Diario. Las ventas quedan en "Ventas"
 //       porque de ahí salen los puntos de La Liga (vigencia 12 meses): moverlas
 //       a "Historico Ventas" les borraba los puntos a los clientes.
@@ -9,7 +11,7 @@
 //  v13 corrigió dos errores de sintaxis de la v11:
 //    1) La primera línea tenía UNA sola barra "/" en vez de "//"
 //    2) La función obtenerCarpeta_() quedó sin cerrar al final
-//  Libro Diario col G = Proveedor · Historico col H = Proveedor
+//  Libro Diario col G = Proveedor · Historico col H = Proveedor · Stock col G = Codigo
 //  Hojas: Libro Diario | Stock | Configuracion | Ventas
 //         Historico | Arqueos | Clientes | Proveedores | Adjuntos | Precios
 // ============================================================
@@ -37,7 +39,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v16 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v17 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -98,6 +100,45 @@ function handleAction(b) {
       }
     }
     return { ok: false, error: 'Producto no encontrado: ' + nombre };
+  }
+
+  // ── CÓDIGOS DE BARRAS (Stock col G, varios separados por coma) ──
+  if (b.action === 'asociarCodigo') {
+    var sheet = ss.getSheetByName(SHEET_STOCK);
+    var data = sheet.getDataRange().getValues();
+    var nombre = String(b.nombre).trim();
+    var codigo = String(b.codigo || '').trim();
+    if (!codigo || codigo.indexOf(',') >= 0) return { ok: false, error: 'Código inválido: ' + codigo };
+    var fila = -1;
+    for (var i = 1; i < data.length; i++) {
+      var nom = String(data[i][0]).trim();
+      if (codigosDeCelda_(data[i][6]).indexOf(codigo) >= 0) {
+        return { ok: false, error: 'El código ' + codigo + ' ya está asociado a "' + nom + '"' };
+      }
+      if (fila < 0 && nom === nombre) fila = i + 1;
+    }
+    if (fila < 0) return { ok: false, error: 'Producto no encontrado: ' + nombre };
+    var actuales = codigosDeCelda_(data[fila - 1][6]);
+    actuales.push(codigo);
+    asegurarEncabezadoCodigo_(sheet, data);
+    // Como texto: si no, Sheets muestra un EAN-13 como 7,79E+12 y se come los ceros iniciales
+    sheet.getRange(fila, 7).setNumberFormat('@').setValue(actuales.join(', '));
+    return { ok: true };
+  }
+  if (b.action === 'quitarCodigo') {
+    var sheet = ss.getSheetByName(SHEET_STOCK);
+    var data = sheet.getDataRange().getValues();
+    var codigo = String(b.codigo || '').trim();
+    for (var i = 1; i < data.length; i++) {
+      var actuales = codigosDeCelda_(data[i][6]);
+      var pos = actuales.indexOf(codigo);
+      if (pos >= 0) {
+        actuales.splice(pos, 1);
+        sheet.getRange(i + 1, 7).setNumberFormat('@').setValue(actuales.join(', '));
+        return { ok: true };
+      }
+    }
+    return { ok: false, error: 'Código no encontrado: ' + codigo };
   }
 
   // ── VENTAS ─────────────────────────────────────────────────
@@ -231,6 +272,23 @@ function agregarFilas_(sheet, filas, colsTexto) {
     sheet.getRange(desde, c, filas.length, 1).setNumberFormat('@');
   });
   sheet.getRange(desde, 1, filas.length, filas[0].length).setValues(filas);
+}
+
+function codigosDeCelda_(valor) {
+  return String(valor == null ? '' : valor).split(',')
+    .map(function(s) { return s.trim(); })
+    .filter(function(s) { return s; });
+}
+
+// En Stock la fila de títulos ("Nombre", "Categoria", ...) no es la primera:
+// arriba hay una fila marcador. Se busca por contenido.
+function asegurarEncabezadoCodigo_(sheet, data) {
+  for (var i = 0; i < Math.min(3, data.length); i++) {
+    if (String(data[i][0]).trim() === 'Nombre') {
+      if (!String(data[i][6] || '').trim()) sheet.getRange(i + 1, 7).setValue('Codigo');
+      return;
+    }
+  }
 }
 
 function getSheetData(ss, name) {
