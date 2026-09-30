@@ -1,6 +1,8 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v17 — códigos de barras en la hoja Stock
+//  POKERSTORE — APPS SCRIPT BACKEND v18 — códigos de barras en la hoja Stock
 //  (SISTEMA NÚCLEO)
+//  v18: asociarCodigo responde ok si el código ya estaba en ese mismo producto,
+//       para que el frontend pueda reintentar cuando Google devuelve un error.
 //  v17: asociarCodigo / quitarCodigo guardan los códigos en Stock col G (texto,
 //       varios separados por coma) en vez de filas 'codigos' en el Libro Diario.
 //  v16: arqueoMes solo archiva el Libro Diario. Las ventas quedan en "Ventas"
@@ -39,7 +41,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v17 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v18 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -113,6 +115,8 @@ function handleAction(b) {
     for (var i = 1; i < data.length; i++) {
       var nom = String(data[i][0]).trim();
       if (codigosDeCelda_(data[i][6]).indexOf(codigo) >= 0) {
+        // Mismo producto = un reintento de algo que ya se guardó
+        if (nom === nombre) return { ok: true, yaEstaba: true };
         return { ok: false, error: 'El código ' + codigo + ' ya está asociado a "' + nom + '"' };
       }
       if (fila < 0 && nom === nombre) fila = i + 1;
