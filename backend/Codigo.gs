@@ -1,17 +1,17 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v15 — el cierre usa el mes elegido y lo
-//  guarda como texto (SISTEMA NÚCLEO)
+//  POKERSTORE — APPS SCRIPT BACKEND v16 — el cierre de mes ya no archiva ventas
+//  (SISTEMA NÚCLEO)
+//  v16: arqueoMes solo archiva el Libro Diario. Las ventas quedan en "Ventas"
+//       porque de ahí salen los puntos de La Liga (vigencia 12 meses): moverlas
+//       a "Historico Ventas" les borraba los puntos a los clientes.
 //  v15: arqueoMes valida el período (AAAA/MM) y lo escribe con formato texto
 //       vía agregarFilas_(). Antes, Sheets convertía "2026/09" en una fecha.
-//  v14: periodoDeFecha_() maneja Date | ISO | DD/MM/AAAA. La v13 solo matcheaba
-//       texto, y como las celdas de fecha son Date reales, las ventas se copiaban
-//       a "Historico Ventas" pero nunca se borraban de "Ventas" → duplicados.
 //  v13 corrigió dos errores de sintaxis de la v11:
 //    1) La primera línea tenía UNA sola barra "/" en vez de "//"
 //    2) La función obtenerCarpeta_() quedó sin cerrar al final
 //  Libro Diario col G = Proveedor · Historico col H = Proveedor
 //  Hojas: Libro Diario | Stock | Configuracion | Ventas
-//         Historico | Arqueos | Clientes | Proveedores | Adjuntos | Precios | Historico Ventas
+//         Historico | Arqueos | Clientes | Proveedores | Adjuntos | Precios
 // ============================================================
 
 const SHEET_DIARIO   = 'Libro Diario';
@@ -37,7 +37,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v15 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v16 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -170,41 +170,9 @@ function handleAction(b) {
     var lastRow = diario.getLastRow();
     if (lastRow > 1) diario.deleteRows(2, lastRow - 1);
 
-    // 5. ARCHIVADO DE VENTAS
-    if (b.ventasData && b.ventasData.length > 0) {
-      var ventasSheet = ss.getSheetByName(SHEET_VENTAS);
-      var historicoVentasSheet = ss.getSheetByName('Historico Ventas');
-
-      // Crear hoja "Historico Ventas" si no existe
-      if (!historicoVentasSheet) {
-        historicoVentasSheet = ss.insertSheet('Historico Ventas');
-        var headerVentas = ventasSheet.getRange(1, 1, 1, ventasSheet.getLastColumn()).getValues()[0];
-        headerVentas.push('periodo');
-        historicoVentasSheet.appendRow(headerVentas);
-      }
-
-      // Agregar las ventas a Historico Ventas
-      var datosVentas = [];
-      for (var v = 0; v < b.ventasData.length; v++) {
-        var venta = b.ventasData[v];
-        datosVentas.push([
-          venta.fecha, venta.canal, venta.quien, venta.cliente, venta.producto,
-          venta.cantidad, venta.monto, venta.pago, venta.estado, venta.orden, venta.evento, b.periodo
-        ]);
-      }
-      agregarFilas_(historicoVentasSheet, datosVentas, [12]);
-
-      // Borrar las ventas del mes de la hoja Ventas activa (de abajo hacia arriba)
-      // El período de cada venta se calcula con periodoDeFecha_(), que maneja
-      // los tres formatos que puede devolver la hoja (Date real, ISO, argentino).
-      var ventasActuales = ventasSheet.getDataRange().getValues();
-      for (var w = ventasActuales.length - 1; w >= 1; w--) {
-        var mesAnioVenta = periodoDeFecha_(ventasActuales[w][0]);
-        if (mesAnioVenta && mesAnioVenta === b.periodo) {
-          ventasSheet.deleteRow(w + 1);
-        }
-      }
-    }
+    // Las ventas NO se archivan: los puntos de La Liga, los resúmenes y el
+    // historial por cliente se calculan desde la hoja Ventas. Si un frontend
+    // viejo manda ventasData, se ignora a propósito.
 
     return { ok: true };
   }
@@ -251,38 +219,6 @@ function handleAction(b) {
   }
 
   return { ok: false, error: 'Acción desconocida: ' + b.action };
-}
-
-// Devuelve el período "AAAA/MM" de una fecha de la planilla, o '' si no se puede leer.
-//
-// IMPORTANTE: getValues() devuelve un objeto Date real (no texto) cuando la celda
-// está formateada como fecha, que es el caso normal — al escribir "12/08/2026" con
-// appendRow, Sheets la convierte en Date automáticamente. Ese caso hay que
-// resolverlo ANTES de intentar cualquier regex: String(unDate) da
-// "Wed Aug 12 2026 00:00:00 GMT-0300 (...)", que no matchea ni ISO ni DD/MM/AAAA
-// y hacía que la venta nunca se borrara de la hoja activa (duplicados mes a mes).
-function periodoDeFecha_(valor) {
-  if (!valor && valor !== 0) return '';
-
-  // Caso 1: la celda es un Date real (el más común)
-  if (Object.prototype.toString.call(valor) === '[object Date]') {
-    if (isNaN(valor.getTime())) return '';
-    var mes = valor.getMonth() + 1;
-    return valor.getFullYear() + '/' + (mes < 10 ? '0' + mes : String(mes));
-  }
-
-  var s = String(valor).trim();
-  if (!s) return '';
-
-  // Caso 2: texto ISO ("2026-08-12" o "2026-08-12T03:00:00.000Z")
-  var m1 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m1) return m1[1] + '/' + m1[2];
-
-  // Caso 3: texto argentino ("12/08/2026")
-  var m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (m2) return m2[3] + '/' + (m2[2].length === 1 ? '0' + m2[2] : m2[2]);
-
-  return '';
 }
 
 // Agrega filas al final de la hoja. Las columnas de colsTexto (1-based) se

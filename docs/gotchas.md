@@ -142,5 +142,23 @@ fecha 01/07/2026. El frontend después recibía `"2026-07-01T03:00:00.000Z"` y
 **Fix (v15 + frontend):** el modal de arqueo tiene un selector de mes (hasta
 el día 15 sugiere el mes anterior) y avisa si ese mes ya tiene un arqueo.
 El backend valida `AAAA/MM` y escribe el período con formato texto vía
-`agregarFilas_()`. El frontend normaliza con `normPeriodo()` los períodos
-viejos guardados como fecha.
+`agregarFilas_()`. Los períodos viejos se corrigieron con
+`backend/CorreccionPeriodos.gs` (se corre una sola vez), y el frontend igual
+normaliza con `normPeriodo()` por si aparece alguno guardado como fecha.
+
+## 9. Las ventas NO se archivan: de ahí salen los puntos de La Liga
+
+El cierre de mes llegó a tener un paso que movía las ventas del mes a
+`Historico Ventas`. Nunca funcionó en la práctica (ver 2b y 8), y cuando se
+arregló se vio el problema de fondo: **los puntos de fidelización, los
+resúmenes por canal/socio y el historial por cliente se calculan solo desde la
+hoja `Ventas`**, y el frontend nunca lee `Historico Ventas`. Los puntos tienen
+12 meses de vigencia, así que archivar ventas les borraba puntos a los
+clientes (y los canjes, que viven en el Libro Diario, los dejaban en negativo).
+
+**Decisión (v16):** el cierre solo archiva el Libro Diario; `Ventas` guarda
+todas las ventas. Son ~200 por mes, Sheets lo banca bien por años. El backend
+ignora `ventasData` si algún frontend viejo lo manda.
+
+Si algún día `Ventas` crece demasiado: antes de archivar, el frontend tiene
+que leer también el histórico para puntos y reportes — no al revés.

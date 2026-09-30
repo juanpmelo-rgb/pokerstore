@@ -812,7 +812,7 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
     <h3>📋 Arqueo de caja — Cierre de mes</h3>
     <div class="form-group"><label>Mes que estás cerrando</label><select id="arqueo-periodo" onchange="renderResumenArqueo()"></select></div>
     <div id="arqueo-resumen" class="modal-msg" style="font-family:inherit"></div>
-    <div class="alert alert-warn" style="font-size:12px">⚠️ Esta acción archiva todos los movimientos actuales del Libro Diario y los pasa a Histórico. El saldo final queda como saldo inicial del mes nuevo. No se puede deshacer.</div>
+    <div class="alert alert-warn" style="font-size:12px">⚠️ Esta acción archiva todos los movimientos actuales del Libro Diario y los pasa a Histórico. Las ventas no se archivan: quedan en Ventas porque de ahí salen los puntos de La Liga. El saldo final queda como saldo inicial del mes nuevo. No se puede deshacer.</div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="cerrarArqueo()">Cancelar</button>
       <button class="btn-primary" id="btn-confirmar-arqueo" onclick="confirmarArqueo()">✓ Confirmar cierre de mes</button>
@@ -3366,10 +3366,6 @@ function periodoSugerido(hoy){
   // Hasta el día 15 se asume que se está cerrando el mes anterior.
   return hoy.getDate() <= 15 ? periodoDeDate(new Date(hoy.getFullYear(), hoy.getMonth()-1, 1)) : periodoDeDate(hoy);
 }
-function ventasDelPeriodo(periodo){
-  const iso = periodo.replace('/','-');
-  return ventas.filter(v => { const f = normFechaPuntos(v.fecha); return f && f.slice(0,7) === iso; });
-}
 function movsFueraDelPeriodo(periodo){
   const iso = periodo.replace('/','-');
   return movimientos.filter(m => { const f = normFechaPuntos(m.fecha); return f && f.slice(0,7) !== iso; }).length;
@@ -3390,7 +3386,6 @@ function renderResumenArqueo(){
   const saldoG = saldoCaja('guille');
   const saldoJ = saldoCaja('juampi');
   const valorStock = productos.reduce((s,p)=>s+p.stock*p.costo,0);
-  const ventasDelMes = ventasDelPeriodo(periodo).length;
   const fuera = movsFueraDelPeriodo(periodo);
   const yaCerrado = arqueos.some(a => a.periodo === periodo);
   const fila = (label, valor, estilo='') => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>${label}</span><strong${estilo?` style="${estilo}"`:''}>${valor}</strong></div>`;
@@ -3400,7 +3395,6 @@ function renderResumenArqueo(){
     ${fila('Período a cerrar', periodoLabel(periodo))}
     ${fila('Movimientos (Libro Diario) a archivar', movimientos.length)}
     ${fuera ? fila(`De esos, fechados fuera de ${periodoLabel(periodo)}`, fuera, 'color:var(--amber)') : ''}
-    ${fila('Ventas a archivar', ventasDelMes, 'color:var(--amber)')}
     ${fila('Saldo final Caja Guille', fmt(saldoG), 'color:var(--green)')}
     ${fila('Saldo final Caja Juampi', fmt(saldoJ), 'color:var(--green)')}
     ${fila('Total disponible', fmt(saldoG+saldoJ))}
@@ -3421,7 +3415,6 @@ async function confirmarArqueo(){
     const saldoG = saldoCaja('guille');
     const saldoJ = saldoCaja('juampi');
     const valorStock = productos.reduce((s,p)=>s+p.stock*p.costo,0);
-    const ventasDelMes = ventasDelPeriodo(periodo);
     const cantMovs = movimientos.length;
 
     await apiCall({
@@ -3432,13 +3425,11 @@ async function confirmarArqueo(){
       cajaJ:Math.round(saldoJ),
       total:Math.round(saldoG+saldoJ),
       valorStock:Math.round(valorStock),
-      movs:cantMovs,
-      ventas:ventasDelMes.length,
-      ventasData:ventasDelMes
+      movs:cantMovs
     });
     cerrarArqueo();
     await loadAll();
-    toast(`✓ ${periodoLabel(periodo)} cerrado. ${cantMovs} movimientos + ${ventasDelMes.length} ventas archivados`);
+    toast(`✓ ${periodoLabel(periodo)} cerrado. ${cantMovs} movimientos archivados`);
     goTab('historico', null);
   } finally {
     btn.disabled=false; btn.textContent='✓ Confirmar cierre de mes';
