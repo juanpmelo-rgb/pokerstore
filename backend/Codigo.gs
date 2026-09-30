@@ -1,6 +1,8 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v14 — el archivado de ventas ahora reconoce
-//  celdas con Date real (SISTEMA NÚCLEO)
+//  POKERSTORE — APPS SCRIPT BACKEND v15 — el cierre usa el mes elegido y lo
+//  guarda como texto (SISTEMA NÚCLEO)
+//  v15: arqueoMes valida el período (AAAA/MM) y lo escribe con formato texto
+//       vía agregarFilas_(). Antes, Sheets convertía "2026/09" en una fecha.
 //  v14: periodoDeFecha_() maneja Date | ISO | DD/MM/AAAA. La v13 solo matcheaba
 //       texto, y como las celdas de fecha son Date reales, las ventas se copiaban
 //       a "Historico Ventas" pero nunca se borraban de "Ventas" → duplicados.
@@ -35,7 +37,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v14 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v15 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -138,16 +140,22 @@ function handleAction(b) {
     var arq    = ss.getSheetByName(SHEET_ARQUEOS);
     var config = ss.getSheetByName(SHEET_CONFIG);
 
-    // 1. Mover movimientos actuales a Histórico con el período
-    var movs = diario.getDataRange().getValues();
-    for (var i = 1; i < movs.length; i++) {
-      if (movs[i][1]) { // tiene descripción
-        histo.appendRow([movs[i][0], movs[i][1], movs[i][2], movs[i][3], movs[i][4], movs[i][5], b.periodo, movs[i][6] || '']);
-      }
+    if (!/^\d{4}\/\d{2}$/.test(String(b.periodo))) {
+      return { ok: false, error: 'Período inválido: "' + b.periodo + '" (se espera AAAA/MM)' };
     }
 
+    // 1. Mover movimientos actuales a Histórico con el período
+    var movs = diario.getDataRange().getValues();
+    var filasHisto = [];
+    for (var i = 1; i < movs.length; i++) {
+      if (movs[i][1]) { // tiene descripción
+        filasHisto.push([movs[i][0], movs[i][1], movs[i][2], movs[i][3], movs[i][4], movs[i][5], b.periodo, movs[i][6] || '']);
+      }
+    }
+    agregarFilas_(histo, filasHisto, [7]);
+
     // 2. Registrar el arqueo
-    arq.appendRow([b.fecha, b.periodo, b.cajaG, b.cajaJ, b.total, b.valorStock, b.movs]);
+    agregarFilas_(arq, [[b.fecha, b.periodo, b.cajaG, b.cajaJ, b.total, b.valorStock, b.movs]], [2]);
 
     // 3. Actualizar saldos en Config (saldo final = saldo inicial del mes nuevo)
     var cfgData = config.getDataRange().getValues();
@@ -184,9 +192,7 @@ function handleAction(b) {
           venta.cantidad, venta.monto, venta.pago, venta.estado, venta.orden, venta.evento, b.periodo
         ]);
       }
-      if (datosVentas.length > 0) {
-        historicoVentasSheet.getRange(historicoVentasSheet.getLastRow() + 1, 1, datosVentas.length, datosVentas[0].length).setValues(datosVentas);
-      }
+      agregarFilas_(historicoVentasSheet, datosVentas, [12]);
 
       // Borrar las ventas del mes de la hoja Ventas activa (de abajo hacia arriba)
       // El período de cada venta se calcula con periodoDeFecha_(), que maneja
@@ -277,6 +283,18 @@ function periodoDeFecha_(valor) {
   if (m2) return m2[3] + '/' + (m2[2].length === 1 ? '0' + m2[2] : m2[2]);
 
   return '';
+}
+
+// Agrega filas al final de la hoja. Las columnas de colsTexto (1-based) se
+// formatean como texto ANTES de escribir: si no, Sheets convierte "2026/09"
+// en la fecha 01/09/2026 y el período se pierde.
+function agregarFilas_(sheet, filas, colsTexto) {
+  if (!filas.length) return;
+  var desde = sheet.getLastRow() + 1;
+  (colsTexto || []).forEach(function(c) {
+    sheet.getRange(desde, c, filas.length, 1).setNumberFormat('@');
+  });
+  sheet.getRange(desde, 1, filas.length, filas[0].length).setValues(filas);
 }
 
 function getSheetData(ss, name) {

@@ -122,3 +122,25 @@ simple vista. Solo aparece en la consola del navegador.
 etc.) debería tener un nombre único y estable, documentado, para evitar este
 tipo de mismatch al copiar/pegar bloques de lógica entre versiones del
 archivo.
+
+## 8. El cierre de mes se hace en el mes siguiente → el período no puede salir de "hoy"
+
+**Síntoma:** en `Historico`, lo archivado como "septiembre" eran movimientos
+de agosto (lo mismo con julio y agosto), y `Historico Ventas` nunca llegó a
+crearse aunque ya se habían hecho tres cierres.
+
+**Causa:** el arqueo calculaba el período con la fecha del día. Como el
+cierre se hace los primeros días del mes siguiente (1/7, 2/8, 2/9), cerrar
+junio quedaba etiquetado "julio", y las ventas que buscaba archivar eran las
+del mes recién empezado (casi ninguna), así que las del mes cerrado quedaban
+en `Ventas` para siempre.
+
+**Agravante:** `appendRow` con `"2026/07"` hace que Sheets lo convierta en la
+fecha 01/07/2026. El frontend después recibía `"2026-07-01T03:00:00.000Z"` y
+`periodoLabel()` lo mostraba roto.
+
+**Fix (v15 + frontend):** el modal de arqueo tiene un selector de mes (hasta
+el día 15 sugiere el mes anterior) y avisa si ese mes ya tiene un arqueo.
+El backend valida `AAAA/MM` y escribe el período con formato texto vía
+`agregarFilas_()`. El frontend normaliza con `normPeriodo()` los períodos
+viejos guardados como fecha.
