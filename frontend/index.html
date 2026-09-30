@@ -810,6 +810,7 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
 <div class="modal-overlay" id="modal-arqueo">
   <div class="modal" style="max-width:480px">
     <h3>📋 Arqueo de caja — Cierre de mes</h3>
+    <div class="form-group"><label>Mes que estás cerrando</label><select id="arqueo-periodo" onchange="renderResumenArqueo()"></select></div>
     <div id="arqueo-resumen" class="modal-msg" style="font-family:inherit"></div>
     <div class="alert alert-warn" style="font-size:12px">⚠️ Esta acción archiva todos los movimientos actuales del Libro Diario y los pasa a Histórico. El saldo final queda como saldo inicial del mes nuevo. No se puede deshacer.</div>
     <div class="modal-actions">
@@ -1236,7 +1237,7 @@ async function loadAll(intento) {
         quien:   String(r[3]||''),
         tipo:    String(r[4]||''),
         monto:   parseFloat(r[5])||0,
-        periodo: String(r[6]||''),
+        periodo: normPeriodo(r[6]),
         proveedor: String(r[7]||'')
       })).filter(h => h.desc);
     } else { historico = []; }
@@ -1245,7 +1246,7 @@ async function loadAll(intento) {
     if(data.arqueos && data.arqueos.length > 1) {
       arqueos = data.arqueos.slice(1).map(r => ({
         fecha:      String(r[0]||''),
-        periodo:    String(r[1]||''),
+        periodo:    normPeriodo(r[1]),
         cajaG:      parseFloat(r[2])||0,
         cajaJ:      parseFloat(r[3])||0,
         total:      parseFloat(r[4])||0,
@@ -3302,9 +3303,16 @@ function poblarFiltroPeriodoHistorico(){
   const cur = sel.value;
   sel.innerHTML = '<option value="">Todos</option>' + periodos.map(p=>`<option value="${p}"${p===cur?' selected':''}>${periodoLabel(p)}</option>`).join('');
 }
+// Sheets convierte "2026/07" en una fecha si la celda no está como texto,
+// y por JSON llega como "2026-07-01T03:00:00.000Z". Aceptamos ambos.
+function normPeriodo(p){
+  const s = String(p||'').trim();
+  const m = s.match(/^(\d{4})[\/-](\d{1,2})/);
+  return m ? `${m[1]}/${m[2].padStart(2,'0')}` : s;
+}
 function periodoLabel(p){
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const [y,m]=p.split('/');
+  const [y,m]=normPeriodo(p).split('/');
   return `${meses[parseInt(m)]||m} ${y}`;
 }
 
@@ -3351,68 +3359,86 @@ function renderHistorico(){
       </tr>`).join('');
 }
 
+// El cierre se hace normalmente los primeros días del mes siguiente, así que
+// el período NO puede salir de la fecha de hoy: se elige en el modal.
+function periodoDeDate(d){ return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0'); }
+function periodoSugerido(hoy){
+  // Hasta el día 15 se asume que se está cerrando el mes anterior.
+  return hoy.getDate() <= 15 ? periodoDeDate(new Date(hoy.getFullYear(), hoy.getMonth()-1, 1)) : periodoDeDate(hoy);
+}
+function ventasDelPeriodo(periodo){
+  const iso = periodo.replace('/','-');
+  return ventas.filter(v => { const f = normFechaPuntos(v.fecha); return f && f.slice(0,7) === iso; });
+}
+function movsFueraDelPeriodo(periodo){
+  const iso = periodo.replace('/','-');
+  return movimientos.filter(m => { const f = normFechaPuntos(m.fecha); return f && f.slice(0,7) !== iso; }).length;
+}
+
 function abrirArqueo(){
+  const hoy = new Date();
+  const opciones = [-2,-1,0].map(n => periodoDeDate(new Date(hoy.getFullYear(), hoy.getMonth()+n, 1)));
+  const sugerido = periodoSugerido(hoy);
+  document.getElementById('arqueo-periodo').innerHTML = opciones.map(p =>
+    `<option value="${p}"${p===sugerido?' selected':''}>${periodoLabel(p)}</option>`).join('');
+  renderResumenArqueo();
+  document.getElementById('modal-arqueo').classList.add('open');
+}
+
+function renderResumenArqueo(){
+  const periodo = document.getElementById('arqueo-periodo').value;
   const saldoG = saldoCaja('guille');
   const saldoJ = saldoCaja('juampi');
   const valorStock = productos.reduce((s,p)=>s+p.stock*p.costo,0);
-  const hoy = new Date();
-  const periodo = hoy.getFullYear()+'/'+String(hoy.getMonth()+1).padStart(2,'0');
-  
-  // FIX: usar normFecha (ISO) en vez de split('/') — las ventas guardan
-  // fecha en formato ISO ("2026-07-27T03:00:00.000Z"), no "DD/MM/YYYY".
-  // El split silencioso dejaba 0 ventas capturadas sin avisar el error.
-  const mesActualISO = hoy.getFullYear()+'-'+String(hoy.getMonth()+1).padStart(2,'0');
-  const ventasDelMesArr = ventas.filter(v => {
-    const f = normFechaPuntos(v.fecha);
-    return f && f.slice(0,7) === mesActualISO;
-  });
-  const ventasDelMes = ventasDelMesArr.length;
+  const ventasDelMes = ventasDelPeriodo(periodo).length;
+  const fuera = movsFueraDelPeriodo(periodo);
+  const yaCerrado = arqueos.some(a => a.periodo === periodo);
+  const fila = (label, valor, estilo='') => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>${label}</span><strong${estilo?` style="${estilo}"`:''}>${valor}</strong></div>`;
 
   document.getElementById('arqueo-resumen').innerHTML = `
-    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Período a cerrar</span><strong>${periodoLabel(periodo)}</strong></div>
-    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Movimientos (Libro Diario) a archivar</span><strong>${movimientos.length}</strong></div>
-    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Ventas a archivar</span><strong style="color:var(--amber)">${ventasDelMes}</strong></div>
-    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Saldo final Caja Guille</span><strong style="color:var(--green)">${fmt(saldoG)}</strong></div>
-    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Saldo final Caja Juampi</span><strong style="color:var(--green)">${fmt(saldoJ)}</strong></div>
-    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span>Total disponible</span><strong>${fmt(saldoG+saldoJ)}</strong></div>
+    ${yaCerrado ? `<div class="alert alert-warn" style="font-size:12px">⚠️ ${periodoLabel(periodo)} ya tiene un arqueo registrado. Revisá que no estés cerrando el mismo mes dos veces.</div>` : ''}
+    ${fila('Período a cerrar', periodoLabel(periodo))}
+    ${fila('Movimientos (Libro Diario) a archivar', movimientos.length)}
+    ${fuera ? fila(`De esos, fechados fuera de ${periodoLabel(periodo)}`, fuera, 'color:var(--amber)') : ''}
+    ${fila('Ventas a archivar', ventasDelMes, 'color:var(--amber)')}
+    ${fila('Saldo final Caja Guille', fmt(saldoG), 'color:var(--green)')}
+    ${fila('Saldo final Caja Juampi', fmt(saldoJ), 'color:var(--green)')}
+    ${fila('Total disponible', fmt(saldoG+saldoJ))}
     <div style="display:flex;justify-content:space-between;padding:6px 0"><span>Valor del stock (al costo)</span><strong style="color:var(--blue)">${fmt(valorStock)}</strong></div>
   `;
-  document.getElementById('modal-arqueo').classList.add('open');
 }
 function cerrarArqueo(){ document.getElementById('modal-arqueo').classList.remove('open'); }
 
 async function confirmarArqueo(){
+  const periodo = document.getElementById('arqueo-periodo').value;
+  if(!/^\d{4}\/\d{2}$/.test(periodo)){ toast('Elegí el mes a cerrar', 'err'); return; }
+  if(arqueos.some(a => a.periodo === periodo) &&
+     !confirm(`${periodoLabel(periodo)} ya tiene un arqueo registrado. ¿Cerrarlo de nuevo igual?`)) return;
+
   const btn = document.getElementById('btn-confirmar-arqueo');
   btn.disabled=true; btn.textContent='⏳ Procesando...';
   try {
     const saldoG = saldoCaja('guille');
     const saldoJ = saldoCaja('juampi');
     const valorStock = productos.reduce((s,p)=>s+p.stock*p.costo,0);
-    const hoy = new Date();
-    const periodo = hoy.getFullYear()+'/'+String(hoy.getMonth()+1).padStart(2,'0');
-    
-    // Ventas del mes actual a archivar
-    const mesActualISO2 = hoy.getFullYear()+'-'+String(hoy.getMonth()+1).padStart(2,'0');
-    const ventasDelMes = ventas.filter(v => {
-      const f = normFechaPuntos(v.fecha);
-      return f && f.slice(0,7) === mesActualISO2;
-    });
-    
+    const ventasDelMes = ventasDelPeriodo(periodo);
+    const cantMovs = movimientos.length;
+
     await apiCall({
-      action:'arqueoMes', 
-      periodo, 
-      fecha:today(), 
-      cajaG:Math.round(saldoG), 
-      cajaJ:Math.round(saldoJ), 
-      total:Math.round(saldoG+saldoJ), 
-      valorStock:Math.round(valorStock), 
-      movs:movimientos.length,
+      action:'arqueoMes',
+      periodo,
+      fecha:today(),
+      cajaG:Math.round(saldoG),
+      cajaJ:Math.round(saldoJ),
+      total:Math.round(saldoG+saldoJ),
+      valorStock:Math.round(valorStock),
+      movs:cantMovs,
       ventas:ventasDelMes.length,
-      ventasData:ventasDelMes  // Pasar array de ventas para archivar
+      ventasData:ventasDelMes
     });
     cerrarArqueo();
     await loadAll();
-    toast(`✓ Mes cerrado. ${movimientos.length} movimientos + ${ventasDelMes.length} ventas archivados`);
+    toast(`✓ ${periodoLabel(periodo)} cerrado. ${cantMovs} movimientos + ${ventasDelMes.length} ventas archivados`);
     goTab('historico', null);
   } finally {
     btn.disabled=false; btn.textContent='✓ Confirmar cierre de mes';
