@@ -162,3 +162,24 @@ ignora `ventasData` si algún frontend viejo lo manda.
 
 Si algún día `Ventas` crece demasiado: antes de archivar, el frontend tiene
 que leer también el histórico para puntos y reportes — no al revés.
+
+## 10. Cuentas de La Liga partidas por cómo se escribe el nombre
+
+Hasta octubre 2026 la cuenta de puntos era el texto del campo Cliente de cada
+venta, en minúsculas. "Héctor MDQ" y "hector mdq" eran dos cuentas, y la venta
+creaba un cliente nuevo sola cada vez que el nombre no coincidía exacto, así
+que la hoja Clientes juntó repetidos. También sumaban puntos los canales
+("mercado libre") y las ventas canceladas.
+
+Se reinició La Liga el 1/10/2026 (`LIGA_INICIO`: las ventas anteriores no
+suman) y ahora:
+- los nombres se comparan con `claveNombre()` / `claveNombre_()` (sin tildes,
+  sin mayúsculas, sin espacios de más) — tienen que seguir siendo iguales en
+  frontend y backend;
+- cada cliente que suma puntos tiene DNI, y nombre y DNI son únicos (el
+  backend lo valida también, por si Juampi y Guille cargan a la vez);
+- la venta ya no crea clientes sola: si el nombre es nuevo pide el DNI, y si
+  el DNI ya existe ofrece usar ese cliente;
+- solo suman ventas Pagadas/Entregadas.
+
+Los repetidos viejos se unieron una sola vez con `backend/UnificarClientes.gs`.

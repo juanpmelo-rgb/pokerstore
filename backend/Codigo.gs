@@ -1,6 +1,9 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v18 — códigos de barras en la hoja Stock
+//  POKERSTORE — APPS SCRIPT BACKEND v19 — clientes con DNI único
 //  (SISTEMA NÚCLEO)
+//  v19: Clientes col I = DNI y col J = SumaPuntos. addCliente/updateCliente
+//       rechazan nombres (sin importar tildes/mayúsculas) y DNI repetidos.
+//       Renombrar un cliente renombra sus ventas y canjes de La Liga.
 //  v18: asociarCodigo responde ok si el código ya estaba en ese mismo producto,
 //       para que el frontend pueda reintentar cuando Google devuelve un error.
 //  v17: asociarCodigo / quitarCodigo guardan los códigos en Stock col G (texto,
@@ -41,7 +44,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v18 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v19 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -223,15 +226,35 @@ function handleAction(b) {
   }
 
   // ── CLIENTES ───────────────────────────────────────────────
+  // Cols: A Nombre · B Tipo · C Telefono · D Email · E Localidad · F UltimaConsulta
+  //       G Notas · H Lista · I DNI (texto) · J SumaPuntos ('no' = no suma en La Liga)
+  // Ni el nombre (comparado con claveNombre_) ni el DNI pueden repetirse.
   if (b.action === 'addCliente') {
-    ss.getSheetByName(SHEET_CLIENTES).appendRow([b.nombre, b.tipo, b.telefono, b.email, b.localidad, b.ultconsulta, b.notas, b.lista]);
+    var shA = ss.getSheetByName(SHEET_CLIENTES);
+    var errA = validarCliente_(shA, b, -1);
+    if (errA) return { ok: false, error: errA };
+    asegurarEncabezadosClientes_(shA);
+    agregarFilas_(shA, [filaCliente_(b)], [9]);
     return { ok: true };
   }
   if (b.action === 'updateCliente') {
     var sh = ss.getSheetByName(SHEET_CLIENTES);
     var fila = Number(b.row) + 2;
-    sh.getRange(fila, 1, 1, 8).setValues([[b.nombre, b.tipo, b.telefono, b.email, b.localidad, b.ultconsulta, b.notas, b.lista]]);
-    return { ok: true };
+    var err = validarCliente_(sh, b, fila);
+    if (err) return { ok: false, error: err };
+    asegurarEncabezadosClientes_(sh);
+    var nombreViejo = sh.getRange(fila, 1).getValue();
+    sh.getRange(fila, 9).setNumberFormat('@');
+    sh.getRange(fila, 1, 1, 10).setValues([filaCliente_(b)]);
+    // Si cambió el nombre, se cambia también en sus ventas y canjes para que
+    // no pierda los puntos (La Liga une ventas y clientes por el nombre).
+    var renombradas = 0;
+    if (claveNombre_(nombreViejo) && claveNombre_(nombreViejo) !== claveNombre_(b.nombre)) {
+      renombradas = renombrarEnHoja_(ss.getSheetByName(SHEET_VENTAS), 4, null, nombreViejo, b.nombre)
+                  + renombrarEnHoja_(ss.getSheetByName(SHEET_DIARIO), 7, 4, nombreViejo, b.nombre)
+                  + renombrarEnHoja_(ss.getSheetByName(SHEET_HISTORICO), 8, 4, nombreViejo, b.nombre);
+    }
+    return { ok: true, renombradas: renombradas };
   }
   if (b.action === 'deleteCliente') {
     ss.getSheetByName(SHEET_CLIENTES).deleteRow(Number(b.row) + 2);
@@ -293,6 +316,59 @@ function asegurarEncabezadoCodigo_(sheet, data) {
       return;
     }
   }
+}
+
+// Clave para comparar nombres de clientes: sin tildes, sin mayúsculas, sin
+// espacios de más. Igual que claveNombre() en el frontend.
+function claveNombre_(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function soloDigitos_(v) {
+  return String(v == null ? '' : v).replace(/\D/g, '');
+}
+
+function filaCliente_(b) {
+  return [String(b.nombre || '').trim(), b.tipo || '', b.telefono || '', b.email || '', b.localidad || '',
+          b.ultconsulta || '', b.notas || '', b.lista || '', soloDigitos_(b.dni),
+          String(b.sumaPuntos || '').toLowerCase() === 'no' ? 'no' : ''];
+}
+
+// Devuelve el texto del error, o '' si el cliente se puede guardar.
+// filaPropia = fila que se está editando (para no compararla consigo misma); -1 al agregar.
+function validarCliente_(sheet, b, filaPropia) {
+  var clave = claveNombre_(b.nombre);
+  var dni = soloDigitos_(b.dni);
+  if (!clave) return 'Falta el nombre del cliente';
+  if (dni && !/^\d{7,11}$/.test(dni)) return 'DNI inválido: ' + b.dni;
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (i + 1 === filaPropia) continue;
+    if (claveNombre_(data[i][0]) === clave) return 'Ya existe un cliente llamado "' + data[i][0] + '"';
+    if (dni && soloDigitos_(data[i][8]) === dni) return 'El DNI ' + dni + ' ya está registrado a nombre de "' + data[i][0] + '"';
+  }
+  return '';
+}
+
+function asegurarEncabezadosClientes_(sheet) {
+  if (!String(sheet.getRange(1, 9).getValue()).trim()) sheet.getRange(1, 9).setValue('DNI');
+  if (!String(sheet.getRange(1, 10).getValue()).trim()) sheet.getRange(1, 10).setValue('SumaPuntos');
+}
+
+// Reemplaza el nombre de un cliente en la columna colNombre (1-based). Si se
+// pasa colQuien, solo en las filas con quien='puntos' (canjes de La Liga).
+function renombrarEnHoja_(sheet, colNombre, colQuien, viejo, nuevo) {
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  var data = sheet.getDataRange().getValues();
+  var clave = claveNombre_(viejo), n = 0;
+  for (var i = 1; i < data.length; i++) {
+    if (colQuien && String(data[i][colQuien - 1]).trim() !== 'puntos') continue;
+    if (claveNombre_(data[i][colNombre - 1]) === clave) {
+      sheet.getRange(i + 1, colNombre).setValue(nuevo);
+      n++;
+    }
+  }
+  return n;
 }
 
 function getSheetData(ss, name) {

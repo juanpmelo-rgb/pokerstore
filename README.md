@@ -79,4 +79,13 @@ No hay servidor propio ni base de datos tradicional. Son tres piezas separadas:
   los puntos de La Liga se calculan desde la hoja `Ventas`. Ver
   `docs/gotchas.md` #8 y #9.
 
+- **Clientes y La Liga**: el cliente se identifica por el nombre (comparado
+  sin tildes ni mayúsculas con `claveNombre()`) y por el DNI del
+  representante (hoja `Clientes`, col I, texto). Ninguno de los dos puede
+  repetirse: lo controlan el frontend y también el backend. Solo suman puntos
+  los clientes con DNI y sin `no` en la col J (`SumaPuntos`), por ventas
+  Pagadas o Entregadas desde `LIGA_INICIO` (1/10/2026, cuando se reiniciaron
+  los puntos). Las ventas guardan el nombre, no el DNI: por eso renombrar un
+  cliente renombra también sus ventas y canjes. Ver `docs/gotchas.md` #10.
+
 Ver `docs/gotchas.md` para el historial de bugs ya resueltos y por qué.

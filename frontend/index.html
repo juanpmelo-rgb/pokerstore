@@ -552,7 +552,7 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
 
 <!-- ═══════════════ CLIENTES ═══════════════ -->
 <div id="panel-puntos" class="panel">
-  <div class="alert alert-info">🏆 <strong>La Liga</strong> — Los puntos se calculan solos desde Ventas: 1 punto cada $1.000, usando el nombre del <strong>Cliente</strong> como cuenta del club. Vencen a los 12 meses.</div>
+  <div class="alert alert-info">🏆 <strong>La Liga</strong> — Los puntos se calculan solos desde Ventas: 1 punto cada $1.000 en ventas pagadas o entregadas desde el 1/10/2026. Suman solo los clientes con <strong>DNI</strong> cargado en Clientes. Vencen a los 12 meses.</div>
 
   <div id="puntos-alertas"></div>
   <div class="kpi-grid" id="kpi-puntos"></div>
@@ -636,6 +636,13 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
     <div class="edit-banner" id="cl-edit-banner"><span id="cl-edit-txt"></span><button class="btn-sm" onclick="cancelarEdicionCliente()">✕ Cancelar edición</button></div>
     <div class="form-row">
       <div class="form-group" style="flex:2"><label>Nombre</label><input type="text" id="cl-nombre" placeholder="Nombre o razón social"></div>
+      <div class="form-group"><label>DNI del representante</label><input type="text" id="cl-dni" inputmode="numeric" placeholder="Ej: 30123456"></div>
+      <div class="form-group"><label>La Liga</label>
+        <select id="cl-suma">
+          <option value="si">🏆 Suma puntos</option>
+          <option value="no">— No suma puntos</option>
+        </select>
+      </div>
       <div class="form-group"><label>Tipo</label>
         <select id="cl-tipo">
           <option value="Consumidor final">🧍 Consumidor final</option>
@@ -664,7 +671,7 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
   <div class="section-title">Base de clientes</div>
   <div class="card-flat">
     <table>
-      <thead><tr><th>Nombre</th><th>Tipo</th><th>Lista</th><th>Teléfono</th><th>Email</th><th>Localidad</th><th>Últ. consulta</th><th>Notas</th><th></th></tr></thead>
+      <thead><tr><th>Nombre</th><th>DNI</th><th>Puntos</th><th>Tipo</th><th>Lista</th><th>Teléfono</th><th>Email</th><th>Localidad</th><th>Últ. consulta</th><th>Notas</th><th></th></tr></thead>
       <tbody id="tbody-clientes"></tbody>
     </table>
   </div>
@@ -921,7 +928,8 @@ function generarBoleta(items, cliente, tipo, montoManual) {
   // Bloque "La Liga": puntos que suma esta compra + acumulado de la cuenta.
   // Solo en comprobantes de venta con cuenta identificada (no en presupuestos).
   let bloquePuntos = '';
-  const claveCli = claveCuenta(cliente);
+  const cuentaLiga = cuentaLigaDe(cliente);
+  const claveCli = cuentaLiga ? claveNombre(cuentaLiga.nombre) : '';
   if(tipo !== 'Presupuesto' && claveCli){
     const ptsCompra = puntosDeMonto(total);
     const est = estadoCuenta(claveCli);
@@ -1210,7 +1218,9 @@ async function loadAll(intento) {
 
     // Procesar Clientes  (FIX bug: antes no se leían → la tabla quedaba en 0)
     if(data.clientes && data.clientes.length > 1) {
-      clientes = data.clientes.slice(1).map(r => ({
+      // fila = número de fila en la hoja (para editar/borrar aunque haya filas vacías)
+      clientes = data.clientes.slice(1).map((r, idx) => ({
+        fila:        idx + 2,
         nombre:      String(r[0]||''),
         tipo:        String(r[1]||''),
         telefono:    String(r[2]||''),
@@ -1218,7 +1228,9 @@ async function loadAll(intento) {
         localidad:   String(r[4]||''),
         ultconsulta: String(r[5]||''),
         notas:       String(r[6]||''),
-        lista:       String(r[7]||'tienda')
+        lista:       String(r[7]||'tienda'),
+        dni:         soloDigitos(r[8]),
+        sumaPuntos:  String(r[9]||'').trim().toLowerCase() !== 'no'
       })).filter(c => c.nombre);
     } else { clientes = []; }
 
@@ -1643,7 +1655,7 @@ async function addVenta(){
   const fecha   = document.getElementById('v-fecha').value || today();
   const canal   = document.getElementById('v-canal').value;
   const quien   = document.getElementById('v-quien').value;
-  const cliente = document.getElementById('v-cliente').value.trim();
+  let   cliente = document.getElementById('v-cliente').value.trim();
   const monto   = parseFloat(document.getElementById('v-monto').value)||0;
   const pago    = document.getElementById('v-pago').value;
   const estado  = document.getElementById('v-estado').value;
@@ -1665,13 +1677,23 @@ async function addVenta(){
     }
   }
 
+  // Cliente: si ya existe se usa su nombre exacto (así suma a la misma cuenta);
+  // si es nuevo se pide el DNI para darlo de alta.
+  let clienteNuevo = null;
+  if(cliente){
+    const r = resolverClienteVenta(cliente);
+    if(!r) return;
+    cliente = r.nombre; clienteNuevo = r.nuevo;
+  }
+
   const btn = document.getElementById('btn-add-venta');
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
 
   try {
-    // 0. Crear cliente al vuelo si se escribió uno nuevo
-    if(cliente && !buscarCliente(cliente)){
-      await apiCall({action:'addCliente', nombre:cliente, tipo:'Consumidor final', telefono:'', email:'', localidad:'', ultconsulta:today(), notas:'', lista:'tienda'});
+    // 0. Dar de alta el cliente nuevo (con DNI)
+    if(clienteNuevo){
+      const r = await apiCall({action:'addCliente', nombre:cliente, dni:clienteNuevo.dni, sumaPuntos:'', tipo:'Consumidor final', telefono:'', email:'', localidad:'', ultconsulta:today(), notas:'', lista:'tienda'});
+      if(!r.ok){ toast(r.error||'No se pudo crear el cliente','err'); return; }
     }
     // 1. Registrar la venta con todos los ítems en la descripción
     await apiCall({action:'addVenta', fecha, canal, quien, cliente,
@@ -1739,7 +1761,9 @@ async function guardarEdicionVenta(){
   const fecha    = document.getElementById('ev-fecha').value || today();
   const canal    = document.getElementById('ev-canal').value;
   const quien    = document.getElementById('ev-quien').value;
-  const cliente  = document.getElementById('ev-cliente').value.trim();
+  let   cliente  = document.getElementById('ev-cliente').value.trim();
+  const cliExistente = buscarCliente(cliente);
+  if(cliExistente) cliente = cliExistente.nombre;   // mismo nombre exacto → misma cuenta de puntos
   const producto = document.getElementById('ev-producto').value.trim();
   const monto    = parseFloat(document.getElementById('ev-monto').value)||0;
   const pago     = document.getElementById('ev-pago').value;
@@ -1926,10 +1950,15 @@ function renderFondoUSD(){
 // Los puntos GANADOS se derivan de la pestaña Ventas (campo Cliente = cuenta).
 // Los CANJES viven en el Libro Diario con quien='puntos' (no tocan las cajas).
 // Nada se carga dos veces.
+// Solo suman los clientes de la hoja Clientes con DNI cargado y sin la marca
+// "No suma puntos". El nombre de la venta se compara con claveNombre(), así
+// "Héctor MDQ" y "hector mdq" son la misma cuenta.
 
 const PUNTOS_POR_PESO = 1000;   // 1 punto cada $1.000 gastados
 const DIVISOR_PREMIO  = 50;     // premio = costo ÷ 50 puntos (≈5% del gasto)
 const MESES_VIGENCIA  = 12;
+const LIGA_INICIO     = '2026-10-01';   // reinicio de puntos: las ventas anteriores no suman
+const ESTADOS_CON_PUNTOS = ['Pagado','Entregado'];   // Abierto suma cuando se cobra; Cancelado nunca
 
 function sumarMeses(d, n){
   const x = new Date(d.getTime());
@@ -1953,16 +1982,26 @@ function normFechaPuntos(f){
   const d = new Date(s);
   return isNaN(d) ? '' : d.toISOString().slice(0,10);
 }
-function nombreCuenta(c){ return String(c||'').trim(); }
-function claveCuenta(c){ return nombreCuenta(c).toLowerCase(); }
-
 function puntosDeMonto(monto){ return Math.floor((monto||0)/PUNTOS_POR_PESO); }
 function puntosDePremio(costo){ return Math.ceil((costo||0)/DIVISOR_PREMIO); }
 
-// Todos los canjes registrados (sobreviven al cierre de mes)
+function desdeInicioLiga(fecha){
+  const f = normFechaPuntos(fecha);
+  return !!f && f >= LIGA_INICIO;
+}
+function ventaSumaPuntos(v){
+  return v.monto>0 && ESTADOS_CON_PUNTOS.indexOf(v.estado)>=0 && desdeInicioLiga(v.fecha);
+}
+// Cliente de La Liga para ese nombre, o null si no existe / no tiene DNI / no suma
+function cuentaLigaDe(nombre){
+  const c = buscarCliente(nombre);
+  return c && c.dni && c.sumaPuntos ? c : null;
+}
+
+// Todos los canjes registrados desde el reinicio (sobreviven al cierre de mes)
 function canjesTodos(){
   return movimientos.concat(historico||[])
-    .filter(m=>m.quien==='puntos' && m.tipo==='gasto');
+    .filter(m=>m.quien==='puntos' && m.tipo==='gasto' && desdeInicioLiga(m.fecha));
 }
 
 // Estado completo de una cuenta: lotes, vencidos, canjeados, saldo
@@ -1970,7 +2009,7 @@ function estadoCuenta(clave, hoy){
   hoy = hoy || new Date(normFechaPuntos(today())+'T00:00:00');
   // 1. Lotes de puntos, uno por venta, ordenados por antigüedad
   const lotes = ventas
-    .filter(v=>claveCuenta(v.cliente)===clave && v.monto>0)
+    .filter(v=>claveNombre(v.cliente)===clave && ventaSumaPuntos(v))
     .map(v=>{
       const d = fechaDe(v.fecha);
       if(!d) return null;
@@ -1987,7 +2026,7 @@ function estadoCuenta(clave, hoy){
 
   // 3. Canjes: consumen FIFO desde los lotes vivos más antiguos
   const canjes = canjesTodos()
-    .filter(c=>claveCuenta(c.proveedor)===clave)
+    .filter(c=>claveNombre(c.proveedor)===clave)
     .sort((a,b)=>normFechaPuntos(a.fecha).localeCompare(normFechaPuntos(b.fecha)));
   let canjeados = 0;
   canjes.forEach(c=>{
@@ -2013,15 +2052,17 @@ function estadoCuenta(clave, hoy){
            proxVence: prox?prox.vence:null, proxPts: prox?prox.rest:0, diasProx };
 }
 
-// Todas las cuentas con actividad (derivadas de Ventas)
+// Todas las cuentas de La Liga: clientes con DNI que suman puntos
 function cuentasPuntos(){
   const map = {};
+  clientes.forEach(c=>{
+    if(!c.dni || !c.sumaPuntos) return;
+    const k = claveNombre(c.nombre);
+    map[k] = { clave:k, nombre:c.nombre, dni:c.dni, integrantes:new Set() };
+  });
   ventas.forEach(v=>{
-    const n = nombreCuenta(v.cliente);
-    if(!n) return;
-    const k = claveCuenta(n);
-    if(!map[k]) map[k] = { clave:k, nombre:n, integrantes:new Set() };
-    if(v.orden) map[k].integrantes.add(String(v.orden).trim());
+    const cta = map[claveNombre(v.cliente)];
+    if(cta && v.orden && ventaSumaPuntos(v)) cta.integrantes.add(String(v.orden).trim());
   });
   return Object.values(map).map(c=>({
     ...c,
@@ -2054,7 +2095,7 @@ function renderPuntos(){
   if(kpi) kpi.innerHTML = `
     <div class="kpi"><div class="kpi-label">Cuentas activas</div><div class="kpi-val neu">${cuentas.length}</div></div>
     <div class="kpi"><div class="kpi-label">Puntos en circulación</div><div class="kpi-val pos">${totSaldo.toLocaleString('es-AR')}</div></div>
-    <div class="kpi"><div class="kpi-label">Ganados histórico</div><div class="kpi-val neu">${totGan.toLocaleString('es-AR')}</div></div>
+    <div class="kpi"><div class="kpi-label">Ganados desde 1/10</div><div class="kpi-val neu">${totGan.toLocaleString('es-AR')}</div></div>
     <div class="kpi"><div class="kpi-label">Canjeados</div><div class="kpi-val neu">${totCanj.toLocaleString('es-AR')}</div></div>
     <div class="kpi"><div class="kpi-label">Vencidos</div><div class="kpi-val ${totVenc>0?'neg':'neu'}">${totVenc.toLocaleString('es-AR')}</div></div>`;
 
@@ -2095,7 +2136,7 @@ function renderPuntosSaldos(cuentas){
   const tb = document.getElementById('tbody-puntos-saldos');
   if(!tb) return;
   tb.innerHTML = cuentas.length===0
-    ? `<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px">Sin cuentas todavía. Cargá ventas poniendo el nombre del club en el campo Cliente.</td></tr>`
+    ? `<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px">Sin cuentas todavía. Para que un cliente sume puntos, cargale el DNI en la pestaña Clientes.</td></tr>`
     : cuentas.map(c=>{
       const urgente = c.diasProx!==null && c.diasProx<=30 && c.saldo>0;
       return `<tr>
@@ -2114,20 +2155,21 @@ function renderPuntosMovs(){
   const filas = [];
   // Ganancias, derivadas de Ventas
   ventas.forEach(v=>{
-    const k = claveCuenta(v.cliente);
-    if(!k || v.monto<=0) return;
+    const cta = cuentaLigaDe(v.cliente);
+    if(!cta || !ventaSumaPuntos(v)) return;
+    const k = claveNombre(cta.nombre);
     if(filtro && k!==filtro) return;
     const d = fechaDe(v.fecha); if(!d) return;
-    filas.push({ f:d, cuenta:nombreCuenta(v.cliente), tipo:'Ganancia',
+    filas.push({ f:d, cuenta:cta.nombre, tipo:'Ganancia',
       detalle:`${v.canal}: ${String(v.producto||'').slice(0,45)}`,
       monto:v.monto, pts:puntosDeMonto(v.monto), vence:sumarMeses(d,MESES_VIGENCIA) });
   });
   // Canjes, desde el Libro Diario
   canjesTodos().forEach(c=>{
-    const k = claveCuenta(c.proveedor);
+    const k = claveNombre(c.proveedor);
     if(filtro && k!==filtro) return;
     const d = fechaDe(c.fecha); if(!d) return;
-    filas.push({ f:d, cuenta:nombreCuenta(c.proveedor), tipo:'Canje',
+    filas.push({ f:d, cuenta:String(c.proveedor||'').trim(), tipo:'Canje',
       detalle:String(c.desc||'').replace(/^Canje puntos:\s*/i,''), monto:0, pts:-c.monto, vence:null });
   });
   filas.sort((a,b)=>b.f-a.f);
@@ -3550,15 +3592,48 @@ let editClienteIdx = null;
 
 function poblarDatalists(){
   const dlc = document.getElementById('dl-clientes');
-  if(dlc) dlc.innerHTML = clientes.map(c=>`<option value="${c.nombre.replace(/"/g,'&quot;')}">${LISTA_LABEL[c.lista]||'Tienda'}</option>`).join('');
+  if(dlc) dlc.innerHTML = clientes.map(c=>`<option value="${c.nombre.replace(/"/g,'&quot;')}">${c.dni?'DNI '+c.dni+' · ':''}${LISTA_LABEL[c.lista]||'Tienda'}</option>`).join('');
   const dlp = document.getElementById('dl-proveedores');
   if(dlp) dlp.innerHTML = proveedores.map(p=>`<option value="${p.nombre.replace(/"/g,'&quot;')}">${p.provee||''}</option>`).join('');
 }
 
-// Devuelve el cliente existente (match case-insensitive) o null
+// Clave para comparar nombres: sin tildes, sin mayúsculas, sin espacios de más.
+// "Héctor  MDQ" y "hector mdq" son el mismo cliente. (Igual que claveNombre_ en Codigo.gs)
+function claveNombre(s){
+  return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+}
+function soloDigitos(v){ return String(v==null?'':v).replace(/\D/g,''); }
+
+// Devuelve el cliente existente (mismo nombre según claveNombre) o null
 function buscarCliente(nombre){
-  const n = (nombre||'').trim().toLowerCase();
-  return clientes.find(c => c.nombre.trim().toLowerCase() === n) || null;
+  const k = claveNombre(nombre);
+  return k ? clientes.find(c => claveNombre(c.nombre) === k) || null : null;
+}
+function buscarClientePorDni(dni){
+  const d = soloDigitos(dni);
+  return d ? clientes.find(c => c.dni === d) || null : null;
+}
+function dniValido(d){ return /^\d{7,11}$/.test(d); }   // DNI (7-8) o CUIT (11)
+
+// Cliente de una venta nueva. Si ya existe, devuelve su nombre exacto; si no,
+// pide el DNI para darlo de alta. Devuelve null si el usuario cancela.
+function resolverClienteVenta(nombre){
+  const existente = buscarCliente(nombre);
+  if(existente) return { nombre: existente.nombre, nuevo: null };
+  while(true){
+    const r = prompt(`"${nombre}" no está en Clientes.\n\nPara darlo de alta y que sume puntos en La Liga, escribí el DNI del representante.\n\nDejalo vacío para registrar la venta sin crear el cliente (no suma puntos).`, '');
+    if(r === null) return null;
+    const dni = soloDigitos(r);
+    if(!dni) return { nombre, nuevo: null };
+    if(!dniValido(dni)){ alert('El DNI tiene que tener entre 7 y 11 números.'); continue; }
+    const otro = buscarClientePorDni(dni);
+    if(otro){
+      if(confirm(`⚠️ El DNI ${dni} ya está registrado a nombre de "${otro.nombre}".\n\n¿Registrar la venta a nombre de "${otro.nombre}"?`))
+        return { nombre: otro.nombre, nuevo: null };
+      return null;
+    }
+    return { nombre, nuevo: { dni } };
+  }
 }
 function buscarProveedor(nombre){
   const n = (nombre||'').trim().toLowerCase();
@@ -3567,14 +3642,15 @@ function buscarProveedor(nombre){
 
 // ── FICHA (historial por cliente / proveedor) ───────────────────────────────
 function fichaCliente(nombre){
-  const ventasC = ventas.filter(v => (v.cliente||'').trim().toLowerCase() === nombre.trim().toLowerCase());
+  const ventasC = ventas.filter(v => claveNombre(v.cliente) === claveNombre(nombre));
   const total = ventasC.reduce((s,v)=>s+v.monto,0);
   const cli = buscarCliente(nombre);
-  document.getElementById('ficha-titulo').textContent = '🧍 ' + nombre;
+  document.getElementById('ficha-titulo').textContent = '🧍 ' + nombre + (cli && cli.dni ? ' · DNI ' + cli.dni : '');
   document.getElementById('ficha-kpis').innerHTML = `
     <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">Total consumido</div><div class="kpi-val pos">${fmt(total)}</div></div>
     <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">Compras</div><div class="kpi-val neu">${ventasC.length}</div></div>
-    <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">Lista</div><div class="kpi-val neu" style="font-size:15px">${cli?(LISTA_LABEL[cli.lista]||'Tienda'):'—'}</div></div>`;
+    <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">Lista</div><div class="kpi-val neu" style="font-size:15px">${cli?(LISTA_LABEL[cli.lista]||'Tienda'):'—'}</div></div>
+    <div class="kpi" style="flex:1;min-width:120px"><div class="kpi-label">Puntos La Liga</div><div class="kpi-val neu" style="font-size:15px">${textoPuntosCliente(cli)}</div></div>`;
   document.getElementById('ficha-body').innerHTML = ventasC.length===0
     ? `<div style="color:var(--text3);padding:14px;text-align:center">Sin ventas registradas para este cliente.</div>`
     : `<table><thead><tr><th>Fecha</th><th>Canal</th><th>Producto</th><th>Estado</th><th>Monto</th></tr></thead><tbody>${
@@ -3601,6 +3677,13 @@ function fichaProveedor(nombre){
   document.getElementById('modal-ficha').classList.add('open');
 }
 
+function textoPuntosCliente(c){
+  if(!c) return '—';
+  if(!c.sumaPuntos) return '<span style="color:var(--text3)">No suma</span>';
+  if(!c.dni) return '<span style="color:var(--amber-txt,#9a7b15)">Falta DNI</span>';
+  return `<strong style="color:var(--green)">${estadoCuenta(claveNombre(c.nombre)).saldo.toLocaleString('es-AR')} pts</strong>`;
+}
+
 function filtrarCliente(tipo, btn){
   clienteFiltro = tipo;
   document.querySelectorAll('#panel-clientes .nav-btn').forEach(b=>b.classList.remove('active'));
@@ -3615,17 +3698,20 @@ function renderClientes(){
 
   document.getElementById('kpi-clientes').innerHTML = `
     <div class="kpi"><div class="kpi-label">Total clientes</div><div class="kpi-val">${clientes.length}</div></div>
+    <div class="kpi"><div class="kpi-label">🏆 En La Liga (con DNI)</div><div class="kpi-val neu">${clientes.filter(c=>c.dni&&c.sumaPuntos).length}</div></div>
     <div class="kpi"><div class="kpi-label">🧍 Consumidor final</div><div class="kpi-val neu">${porTipo['Consumidor final']||0}</div></div>
     <div class="kpi"><div class="kpi-label">👥 Grupal / Club</div><div class="kpi-val neu">${porTipo['Grupal (Club)']||0}</div></div>
     <div class="kpi"><div class="kpi-label">🏢 Corporativo</div><div class="kpi-val neu">${porTipo['Corporativo']||0}</div></div>
   `;
 
   document.getElementById('tbody-clientes').innerHTML = cf.length===0
-    ? `<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:20px">Sin clientes en esta categoría.</td></tr>`
+    ? `<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:20px">Sin clientes en esta categoría.</td></tr>`
     : cf.map((c,i)=>{
         const globalIdx = clientes.indexOf(c);
         return `<tr>
           <td><strong>${c.nombre}</strong></td>
+          <td style="font-size:12px">${c.dni||'<span style="color:var(--text3)">—</span>'}</td>
+          <td style="font-size:12px;white-space:nowrap">${textoPuntosCliente(c)}</td>
           <td><span class="badge ${tipoClienteColors[c.tipo]||'badge-blue'}">${c.tipo}</span></td>
           <td style="font-size:12px"><span class="tag">${LISTA_LABEL[c.lista]||'Tienda'}</span></td>
           <td style="font-size:12px">${c.telefono||'—'}</td>
@@ -3643,6 +3729,8 @@ function editCliente(i){
   if(!c) return;
   editClienteIdx = i;
   document.getElementById('cl-nombre').value = c.nombre;
+  document.getElementById('cl-dni').value = c.dni || '';
+  document.getElementById('cl-suma').value = c.sumaPuntos ? 'si' : 'no';
   document.getElementById('cl-tipo').value = c.tipo || 'Consumidor final';
   document.getElementById('cl-lista').value = c.lista || 'tienda';
   document.getElementById('cl-telefono').value = c.telefono || '';
@@ -3659,41 +3747,77 @@ function editCliente(i){
 
 function cancelarEdicionCliente(){
   editClienteIdx = null;
-  ['cl-nombre','cl-telefono','cl-email','cl-localidad','cl-notas'].forEach(id=>document.getElementById(id).value='');
+  ['cl-nombre','cl-dni','cl-telefono','cl-email','cl-localidad','cl-notas'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('cl-suma').value = 'si';
   document.getElementById('cl-edit-banner').classList.remove('show');
   document.getElementById('btn-add-cliente').textContent = '+ Agregar';
 }
 
 async function guardarCliente(){
-  const nombre = document.getElementById('cl-nombre').value.trim();
+  const nombre = document.getElementById('cl-nombre').value.trim().replace(/\s+/g,' ');
+  const dni = soloDigitos(document.getElementById('cl-dni').value);
+  const sumaPuntos = document.getElementById('cl-suma').value !== 'no';
   const tipo = document.getElementById('cl-tipo').value;
   const lista = document.getElementById('cl-lista').value;
   const telefono = document.getElementById('cl-telefono').value.trim();
   const email = document.getElementById('cl-email').value.trim();
   const localidad = document.getElementById('cl-localidad').value.trim();
   const notas = document.getElementById('cl-notas').value.trim();
+  const editando = editClienteIdx !== null ? clientes[editClienteIdx] : null;
   if(!nombre){ toast('Escribí el nombre','err'); return; }
+
+  // Clientes nuevos que suman puntos: DNI obligatorio
+  if(!editando && sumaPuntos && !dni){
+    toast('Cargá el DNI del representante (o elegí "No suma puntos")','err');
+    document.getElementById('cl-dni').focus(); return;
+  }
+  if(dni && !dniValido(dni)){ toast('El DNI tiene que tener entre 7 y 11 números','err'); return; }
+
+  // Ni el nombre ni el DNI pueden repetirse
+  const mismoNombre = buscarCliente(nombre);
+  if(mismoNombre && mismoNombre !== editando){
+    alert(`⚠️ Ya existe un cliente llamado "${mismoNombre.nombre}"${mismoNombre.dni?' (DNI '+mismoNombre.dni+')':''}.\n\nUsá otro nombre o editá ese cliente.`);
+    return;
+  }
+  const mismoDni = buscarClientePorDni(dni);
+  if(mismoDni && mismoDni !== editando){
+    alert(`⚠️ El DNI ${dni} ya está registrado a nombre de "${mismoDni.nombre}".\n\nNo se puede cargar dos veces el mismo DNI.`);
+    return;
+  }
+
+  // Cambiar el nombre también lo cambia en sus ventas (si no, perdería los puntos)
+  if(editando && claveNombre(editando.nombre) !== claveNombre(nombre)){
+    const nv = ventas.filter(v=>claveNombre(v.cliente)===claveNombre(editando.nombre)).length;
+    if(nv && !confirm(`Vas a cambiar "${editando.nombre}" por "${nombre}".\n\nTambién se cambia en sus ${nv} venta${nv>1?'s':''} para que no pierda los puntos. ¿Seguir?`)) return;
+  }
+
+  const datos = {nombre, dni, sumaPuntos: sumaPuntos ? '' : 'no', tipo, telefono, email, localidad, notas, lista};
   const btn=document.getElementById('btn-add-cliente');
   btn.disabled=true; btn.textContent='⏳...';
   try {
-    if(editClienteIdx !== null){
-      const ultconsulta = clientes[editClienteIdx].ultconsulta || today();
-      await apiCall({action:'updateCliente', row:editClienteIdx, nombre, tipo, telefono, email, localidad, ultconsulta, notas, lista});
+    if(editando){
+      const r = await apiCall({action:'updateCliente', row:editando.fila-2, ...datos, ultconsulta: editando.ultconsulta || today()});
+      if(!r.ok){ toast(r.error||'No se pudo guardar','err'); return; }
       cancelarEdicionCliente();
       await loadAll();
       toast('Cliente actualizado ✓');
     } else {
-      await apiCall({action:'addCliente', nombre, tipo, telefono, email, localidad, ultconsulta:today(), notas, lista});
-      ['cl-nombre','cl-telefono','cl-email','cl-localidad','cl-notas'].forEach(id=>document.getElementById(id).value='');
+      const r = await apiCall({action:'addCliente', ...datos, ultconsulta:today()});
+      if(!r.ok){ toast(r.error||'No se pudo guardar','err'); return; }
+      cancelarEdicionCliente();
       await loadAll();
       toast('Cliente agregado ✓');
     }
-  } finally { btn.disabled=false; if(editClienteIdx===null) btn.textContent='+ Agregar'; }
+  } finally { btn.disabled=false; btn.textContent = editClienteIdx===null ? '+ Agregar' : '💾 Guardar cambios'; }
 }
 
 async function delCliente(i){
-  if(!confirm('¿Eliminar a '+clientes[i].nombre+'?')) return;
-  await apiCall({action:'deleteCliente', row:i});
+  const c = clientes[i];
+  if(!c) return;
+  const cta = cuentaLigaDe(c.nombre);
+  const saldo = cta ? estadoCuenta(claveNombre(c.nombre)).saldo : 0;
+  if(!confirm('¿Eliminar a '+c.nombre+'?'+(saldo>0?`\n\n⚠️ Tiene ${saldo.toLocaleString('es-AR')} puntos de La Liga: los pierde.`:''))) return;
+  await apiCall({action:'deleteCliente', row:c.fila-2});
   await loadAll();
   toast('Cliente eliminado');
 }
