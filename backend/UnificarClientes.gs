@@ -21,10 +21,22 @@
 
 var CLIENTES_SIN_PUNTOS = ['mercado libre', 'mercadolibre', 'tienda nube', 'tiendanube', 'hector mdq'];
 
+// Mismo nombre pero personas distintas: se renombran en vez de unirse.
+// Se reconocen por el teléfono, no por la fila.
+var CLIENTES_A_RENOMBRAR = [
+  { nombre: 'nacho', telefono: '1144477616', nuevo: 'Nacho (4447-7616)' }
+];
+
+// Columnas que, si tienen valores distintos, indican que son dos personas
+// (0-based: C Telefono, D Email, I DNI)
+var COLS_IDENTIDAD = [2, 3, 8];
+
 function revisarUnificacion() {
   var plan = planUnificacion_();
   mostrarUnificacion_(plan);
-  if (plan.unir.length || plan.sinPuntos.length || plan.crearTiendaNube || plan.titulos) {
+  if (plan.errores.length) {
+    console.log('⛔ Hay problemas: NO ejecutes aplicarUnificacion() hasta revisarlos.');
+  } else if (plan.renombrar.length || plan.unir.length || plan.sinPuntos.length || plan.crearTiendaNube || plan.titulos) {
     console.log('Si esto es correcto, ejecutá aplicarUnificacion().');
   }
 }
@@ -32,9 +44,13 @@ function revisarUnificacion() {
 function aplicarUnificacion() {
   var plan = planUnificacion_();
   mostrarUnificacion_(plan);
+  if (plan.errores.length) throw new Error('Unificación cancelada: ' + plan.errores.join(' | '));
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CLIENTES);
 
   asegurarEncabezadosClientes_(sh);
+  plan.renombrar.forEach(function(x) {
+    sh.getRange(x.fila, 1).setValue(x.nuevo);
+  });
   plan.unir.forEach(function(u) {
     sh.getRange(u.fila, 1, 1, 10).setValues([u.datos]);
   });
@@ -55,8 +71,19 @@ function aplicarUnificacion() {
 function planUnificacion_() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CLIENTES);
   var data = sh.getDataRange().getValues();
-  var plan = { unir: [], sinPuntos: [], crearTiendaNube: false, titulos: false };
+  var plan = { renombrar: [], unir: [], sinPuntos: [], crearTiendaNube: false, titulos: false, errores: [] };
   plan.titulos = !String(data[0][8] || '').trim() || !String(data[0][9] || '').trim();
+
+  // Primero los homónimos: con el nombre nuevo ya no se agrupan
+  for (var r = 1; r < data.length; r++) {
+    CLIENTES_A_RENOMBRAR.forEach(function(x) {
+      var tel = soloDigitos_(data[r][2]);
+      if (claveNombre_(data[r][0]) === x.nombre && tel && tel.slice(-x.telefono.length) === x.telefono) {
+        plan.renombrar.push({ fila: r + 1, antes: data[r][0], nuevo: x.nuevo });
+        data[r][0] = x.nuevo;
+      }
+    });
+  }
 
   // Agrupar por nombre
   var grupos = {}, orden = [];
@@ -73,7 +100,20 @@ function planUnificacion_() {
     for (var c = 0; c < 10; c++) datos.push(data[filas[0]][c] === undefined ? '' : data[filas[0]][c]);
     var sinPuntos = CLIENTES_SIN_PUNTOS.indexOf(k) >= 0;
 
-    if (filas.length > 1) {
+    // Si dos filas tienen teléfono, email o DNI distintos, son dos personas: no se unen
+    var conflicto = filas.length > 1 && COLS_IDENTIDAD.some(function(c) {
+      var vals = {};
+      filas.forEach(function(f) {
+        var v = c === 3 ? String(data[f][c] || '').trim().toLowerCase() : soloDigitos_(data[f][c]);
+        if (v) vals[v] = true;
+      });
+      return Object.keys(vals).length > 1;
+    });
+    if (conflicto) {
+      plan.errores.push('"' + data[filas[0]][0] + '" está ' + filas.length + ' veces (filas ' +
+        filas.map(function(f) { return f + 1; }).join(', ') + ') con teléfono, email o DNI distintos. ' +
+        'Si son personas distintas, cambiale el nombre a una; si es la misma, borrá el dato que sobra.');
+    } else if (filas.length > 1) {
       // La primera fila manda; de las otras solo se toman los datos que falten
       filas.slice(1).forEach(function(f) {
         for (var c = 0; c < 10; c++) {
@@ -95,10 +135,12 @@ function planUnificacion_() {
 }
 
 function mostrarUnificacion_(plan) {
-  if (!plan.unir.length && !plan.sinPuntos.length && !plan.crearTiendaNube && !plan.titulos) {
+  if (!plan.renombrar.length && !plan.unir.length && !plan.sinPuntos.length && !plan.crearTiendaNube && !plan.titulos && !plan.errores.length) {
     console.log('Nada para hacer: no hay clientes repetidos y las cuentas sin puntos ya están marcadas.');
     return;
   }
+  console.log('HOMÓNIMOS a renombrar: ' + plan.renombrar.length);
+  plan.renombrar.forEach(function(x) { console.log('  fila ' + x.fila + ': "' + x.antes + '" → "' + x.nuevo + '"'); });
   console.log('CLIENTES REPETIDOS a unir: ' + plan.unir.length);
   plan.unir.forEach(function(u) {
     console.log('  ' + u.nombres.join(' + ') + '  →  queda "' + u.nombre + '" (fila ' + u.fila + '), se borran las filas ' + u.borrar.join(', ') +
@@ -108,4 +150,5 @@ function mostrarUnificacion_(plan) {
   plan.sinPuntos.forEach(function(c) { console.log('  ' + c.nombre + ' (fila ' + c.fila + ')'); });
   if (plan.crearTiendaNube) console.log('  Tienda Nube (cliente nuevo)');
   if (plan.titulos) console.log('TÍTULOS: se agregan "DNI" (col I) y "SumaPuntos" (col J)');
+  plan.errores.forEach(function(e) { console.log('⛔ ' + e); });
 }
