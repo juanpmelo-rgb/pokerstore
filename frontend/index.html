@@ -1128,6 +1128,9 @@ async function apiCall(body, opts) {
     const texto = await res.text();
     // Si Google devuelve HTML es porque pide login o el deploy no es público
     if(texto.trim().startsWith('<')){
+      const titulo = (texto.match(/<title>([^<]*)<\/title>/i)||[])[1] || '';
+      console.warn('Google devolvió HTML (status '+res.status+'):', titulo, texto.slice(0,300));
+      if(res.status === 404 || /no se encontr|not found/i.test(texto)) throw new Error('Google devolvió "página no encontrada" (falla momentánea de Google)');
       throw new Error('El Apps Script devolvió una página HTML en vez de datos. Revisá que la implementación esté como "Cualquier usuario" y que la URL termine en /exec.');
     }
     let json;
@@ -1147,14 +1150,43 @@ async function apiCall(body, opts) {
 // Guarda varias cosas en UNA sola llamada (el backend las hace en orden) y
 // recibe los datos ya actualizados en la misma respuesta: no hace falta
 // volver a cargar todo después. Devuelve {ok, error, resultados}.
+// Cuántas filas iguales a lo que agrega cada op hay ahora (para saber, si
+// Google contesta mal, si el guardado igual se hizo)
+function huellasAltas(ops){
+  return ops.map(o=>{
+    if(o.action==='addMovimiento') return movimientos.filter(m=>m.desc===String(o.desc) && Math.abs(m.monto-o.monto)<1 && m.quien===o.quien && m.tipo===o.tipo).length;
+    if(o.action==='addVenta')      return ventas.filter(v=>v.cliente===String(o.cliente||'') && Math.abs(v.monto-o.monto)<1 && v.producto===String(o.producto||'')).length;
+    if(o.action==='addCliente')    return buscarCliente(o.nombre) ? 1 : 0;
+    return null;   // updates / deletes: no se puede verificar así
+  });
+}
+
 async function escribir(...ops){
   let r;
+  const antes = huellasAltas(ops);
   for(let intento = 1; ; intento++){
     try {
-      r = await apiCall({action:'lote', ops, datos:true});
+      r = await apiCall({action:'lote', ops, datos:true}, {silencioso:true});
     } catch(e) {
-      alert('⚠️ No se pudo confirmar si se guardó (' + e.message + ').\n\nTocá "Actualizar" y fijate si quedó cargado antes de volver a intentarlo, así no se duplica.');
-      throw e;
+      // Google contestó mal (a veces su página "no encontrada") pero el guardado
+      // pudo haberse hecho igual: se recarga y se compara antes de avisar.
+      toast('Verificando si se guardó...');
+      if(cargaEnCurso) await cargaEnCurso;          // esa carga pudo empezar antes del guardado
+      const cargaPrevia = cargasOk;
+      await loadAll(true);
+      const recargo = cargasOk > cargaPrevia;    // si la recarga también falló, no se sabe
+      const despues = huellasAltas(ops);
+      const verificables = !recargo ? [] : antes.map((a,i)=>a===null ? null : despues[i] > a).filter(x=>x!==null);
+      if(verificables.length && verificables.every(Boolean)){
+        toast('Guardado ✓ (Google tardó en confirmar)');
+        return {ok:true, resultados:[], verificado:true};
+      }
+      if(verificables.length && verificables.every(x=>!x)){
+        alert('⚠️ No se guardó: Google no respondió bien (' + e.message + ').\n\nVolvé a intentarlo.');
+        return {ok:false, error:'No se guardó'};
+      }
+      alert('⚠️ No se pudo confirmar si se guardó (' + e.message + ').\n\nFijate en la lista si quedó cargado antes de volver a intentarlo, así no se duplica.');
+      return {ok:false, error:'Sin confirmar'};
     }
     // Google a veces convierte el pedido en un GET y contesta "API activa" sin
     // ejecutar nada: ahí sí es seguro reintentar (no se guardó nada).
@@ -1197,7 +1229,7 @@ function datosCompletos(d){
 // pisaban y a veces quedaba la respuesta más vieja). fresco=true saltea la
 // caché del backend (botón Actualizar).
 let cargaEnCurso = null;
-let ultimaCarga = 0, ultimaEscritura = 0;
+let ultimaCarga = 0, ultimaEscritura = 0, cargasOk = 0;
 function loadAll(fresco) {
   if(cargaEnCurso) return cargaEnCurso;
   cargaEnCurso = cargarDatos(fresco === true).finally(()=>{ cargaEnCurso = null; });
@@ -1213,7 +1245,7 @@ async function cargarDatos(fresco) {
       // Si mientras tanto se guardó algo, esta respuesta ya está vieja
       if(ultimaEscritura > inicio) return;
       aplicarDatos(data);
-      ultimaCarga = Date.now();
+      ultimaCarga = Date.now(); cargasOk++;
       toast('Datos actualizados');
       return;
     } catch(e) {
@@ -1402,7 +1434,7 @@ function aplicarDatos(data) {
 function mostrarErrorConexion(e){
   const msg = String(e && e.message ? e.message : e);
   let causa, solucion;
-  if(/no respondió a tiempo|respondió sin datos/i.test(msg)){
+  if(/no respondió a tiempo|respondió sin datos|página no encontrada/i.test(msg)){
     causa = 'Google Sheets tardó demasiado en responder (pasa a veces cuando Google está lento).';
     solucion = 'Esperá un minuto y tocá Reintentar.';
   } else if(/Failed to fetch|NetworkError|Load failed/i.test(msg)){
