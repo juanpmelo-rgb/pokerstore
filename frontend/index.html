@@ -1149,13 +1149,23 @@ async function apiCall(body, opts) {
 // volver a cargar todo después. Devuelve {ok, error, resultados}.
 async function escribir(...ops){
   let r;
-  try {
-    r = await apiCall({action:'lote', ops, datos:true});
-  } catch(e) {
-    alert('⚠️ No se pudo confirmar si se guardó (' + e.message + ').\n\nTocá "Actualizar" y fijate si quedó cargado antes de volver a intentarlo, así no se duplica.');
-    throw e;
+  for(let intento = 1; ; intento++){
+    try {
+      r = await apiCall({action:'lote', ops, datos:true});
+    } catch(e) {
+      alert('⚠️ No se pudo confirmar si se guardó (' + e.message + ').\n\nTocá "Actualizar" y fijate si quedó cargado antes de volver a intentarlo, así no se duplica.');
+      throw e;
+    }
+    // Google a veces convierte el pedido en un GET y contesta "API activa" sin
+    // ejecutar nada: ahí sí es seguro reintentar (no se guardó nada).
+    if(!esRespuestaSinEjecutar(r) || intento >= 3) break;
+    await new Promise(res=>setTimeout(res, 1500*intento));
   }
-  if(r.datos){ ultimaEscritura = Date.now(); aplicarDatos(r.datos); }
+  if(esRespuestaSinEjecutar(r)){
+    toast('Google no procesó el guardado. Probá de nuevo en un minuto.','err');
+    return {ok:false, error:'Google no procesó el guardado'};
+  }
+  if(datosCompletos(r.datos)){ ultimaEscritura = Date.now(); aplicarDatos(r.datos); }
   if(!r.ok) toast(r.error || 'No se pudo guardar', 'err');
   return r;
 }
@@ -1175,6 +1185,14 @@ function setSyncing(active, error=false) {
   }
 }
 
+// Google a veces redirige el POST como GET y responde lo de doGet ("API vN
+// activa") sin datos. Antes eso se tomaba como "planilla vacía" y se veían
+// saldos en cero o números raros: ahora se descarta y se reintenta.
+function esRespuestaSinEjecutar(r){ return !!r && typeof r.msg === 'string' && !('resultados' in r) && !('ventas' in r); }
+function datosCompletos(d){
+  return !!d && ['diario','stock','config','ventas','clientes'].every(k => Array.isArray(d[k]));
+}
+
 // Una sola carga a la vez: si ya hay una en curso, se espera esa (antes se
 // pisaban y a veces quedaba la respuesta más vieja). fresco=true saltea la
 // caché del backend (botón Actualizar).
@@ -1191,6 +1209,7 @@ async function cargarDatos(fresco) {
     try {
       const data = await apiCall({action:'getAll', fresco}, {timeout:45000, silencioso: intento<3});
       if(!data || data.ok === false) throw new Error((data && data.error) || 'Respuesta vacía');
+      if(!datosCompletos(data)) throw new Error('Google respondió sin datos');
       // Si mientras tanto se guardó algo, esta respuesta ya está vieja
       if(ultimaEscritura > inicio) return;
       aplicarDatos(data);
@@ -1383,7 +1402,7 @@ function aplicarDatos(data) {
 function mostrarErrorConexion(e){
   const msg = String(e && e.message ? e.message : e);
   let causa, solucion;
-  if(/no respondió a tiempo/i.test(msg)){
+  if(/no respondió a tiempo|respondió sin datos/i.test(msg)){
     causa = 'Google Sheets tardó demasiado en responder (pasa a veces cuando Google está lento).';
     solucion = 'Esperá un minuto y tocá Reintentar.';
   } else if(/Failed to fetch|NetworkError|Load failed/i.test(msg)){

@@ -228,3 +228,10 @@ Desde v20:
   `onEdit`; vence a los 10 min por si se borran filas a mano);
 - `escribir(...ops)` → acción `lote`: todas las escrituras de un guardado en
   una llamada, con `LockService`, y la respuesta trae los datos actualizados.
+
+Además (7/10/2026): Google a veces redirige el POST a /exec como GET y la
+respuesta es la de doGet (`{"ok":true,"msg":"Pokerstore API vN activa"}`),
+sin datos y sin ejecutar nada. El frontend viejo lo tomaba como planilla vacía
+(saldos en 0, "cualquier número"). Ahora `datosCompletos()` lo rechaza y la
+carga se reintenta; `escribir()` reintenta solo en ese caso (`esRespuestaSinEjecutar`),
+porque ahí es seguro: el doPost no corrió.
