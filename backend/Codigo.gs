@@ -1,6 +1,9 @@
 // ============================================================
-//  POKERSTORE — APPS SCRIPT BACKEND v19 — clientes con DNI único
+//  POKERSTORE — APPS SCRIPT BACKEND v20 — carga rápida
 //  (SISTEMA NÚCLEO)
+//  v20: getAll se guarda en caché (CacheService) y se borra con cualquier
+//       escritura o edición a mano (onEdit). Acción 'lote': varias escrituras
+//       en una sola llamada, con candado, que devuelve los datos actualizados.
 //  v19: Clientes col I = DNI y col J = SumaPuntos. addCliente/updateCliente
 //       rechazan nombres (sin importar tildes/mayúsculas) y DNI repetidos.
 //       Renombrar un cliente renombra sus ventas y canjes de La Liga.
@@ -36,15 +39,30 @@ const SHEET_PRECIOS  = 'Precios';
 const CARPETA_ADJUNTOS = 'Pokerstore - Adjuntos';
 
 function doPost(e) {
-  var body = JSON.parse(e.postData.contents);
-  var result;
-  try { result = handleAction(body); }
-  catch(err) { result = { ok: false, error: err.message }; }
-  return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+  var texto;
+  try {
+    var body = JSON.parse(e.postData.contents);
+    if (body.action === 'getAll') {
+      texto = datosJSON_(body.fresco);
+    } else if (body.action === 'lote') {
+      texto = ejecutarLote_(body);
+    } else {
+      try { texto = JSON.stringify(handleAction(body)); }
+      finally { invalidarCache_(); }
+    }
+  } catch(err) {
+    texto = JSON.stringify({ ok: false, error: err.message });
+  }
+  return ContentService.createTextOutput(texto).setMimeType(ContentService.MimeType.JSON);
+}
+
+// Edición a mano en la planilla → la caché queda vieja (trigger simple, no hay que instalarlo)
+function onEdit(e) {
+  invalidarCache_();
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v19 activa' })).setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, msg: 'Pokerstore API v20 activa' })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function handleAction(b) {
@@ -287,6 +305,80 @@ function handleAction(b) {
   }
 
   return { ok: false, error: 'Acción desconocida: ' + b.action };
+}
+
+// ── CARGA RÁPIDA ───────────────────────────────────────────
+// Leer las 10 hojas tarda ~5 s. El resultado de getAll se guarda en la caché
+// de Apps Script (máx. 100 KB por valor → se parte en trozos) y se reusa hasta
+// que alguien escribe. 'datos_gen' cambia en cada escritura: si cambió mientras
+// se leía la planilla, lo leído no se guarda en caché (podría estar viejo).
+var CACHE_SEG = 600;        // 10 min, por si alguien borra filas a mano (eso no dispara onEdit)
+var CACHE_TROZO = 40000;    // caracteres por trozo (con tildes, cada uno puede ocupar 2 bytes)
+
+function datosJSON_(fresco) {
+  var cache = CacheService.getScriptCache();
+  if (!fresco) {
+    var n = Number(cache.get('datos_n') || 0);
+    if (n > 0) {
+      var claves = [];
+      for (var i = 0; i < n; i++) claves.push('datos_' + i);
+      var trozos = cache.getAll(claves);
+      var texto = '', completo = true;
+      for (var j = 0; j < n; j++) {
+        if (trozos['datos_' + j] == null) { completo = false; break; }
+        texto += trozos['datos_' + j];
+      }
+      if (completo) return texto;
+    }
+  }
+  var gen = cache.get('datos_gen');
+  var json = JSON.stringify(handleAction({ action: 'getAll' }));
+  if (cache.get('datos_gen') === gen) {
+    var valores = {}, cant = 0;
+    for (var k = 0; k < json.length; k += CACHE_TROZO) {
+      valores['datos_' + cant] = json.slice(k, k + CACHE_TROZO);
+      cant++;
+    }
+    try {
+      cache.putAll(valores, CACHE_SEG);
+      cache.put('datos_n', String(cant), CACHE_SEG);
+    } catch (err) { /* si no entra en caché, igual se devuelve */ }
+  }
+  return json;
+}
+
+function invalidarCache_() {
+  var cache = CacheService.getScriptCache();
+  cache.put('datos_gen', String(new Date().getTime()) + Math.random(), 21600);
+  cache.remove('datos_n');
+}
+
+// Varias escrituras en una sola llamada (ej. venta + stock + cobro). Se hacen
+// en orden y con candado (Juampi y Guille pueden guardar a la vez); si una
+// falla, se cortan las siguientes. Con datos:true devuelve getAll actualizado.
+function ejecutarLote_(b) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var resultados = [], error = '';
+  try {
+    var ops = b.ops || [];
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i];
+      if (!op || op.action === 'getAll' || op.action === 'lote') { error = 'Operación inválida en el lote'; break; }
+      var r = handleAction(op);
+      resultados.push(r);
+      if (!r || r.ok === false) { error = (r && r.error) || 'Falló ' + op.action; break; }
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    invalidarCache_();
+    lock.releaseLock();
+  }
+  var texto = '{"ok":' + (error ? 'false' : 'true') +
+              ',"error":' + JSON.stringify(error) +
+              ',"resultados":' + JSON.stringify(resultados);
+  if (b.datos) texto += ',"datos":' + datosJSON_(true);
+  return texto + '}';
 }
 
 // Agrega filas al final de la hoja. Las columnas de colsTexto (1-based) se

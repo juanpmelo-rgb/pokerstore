@@ -207,3 +207,24 @@ Actualización (7/10/2026): La Liga quedó solo para clubes, peñas y
 mayoristas (`participaLiga()`). El DNI se pide solo a esas cuentas, que se
 crean desde la pestaña Clientes; la venta vuelve a dar de alta sola a los
 clientes nuevos como consumidor final, sin DNI y sin puntos.
+
+## 12. "Conectando a Google Sheets" eterno y errores de conexión
+
+El frontend hacía `loadAll()` cada 30 s en cada pestaña abierta. Cada getAll
+lee las 10 hojas (~266 KB, ~6 s; Historico es el 73%), y con dos personas con
+el sistema abierto todo el día Google se saturaba: llamadas de 20 s, cargas
+que se pisaban (a veces quedaba la respuesta más vieja) y fetch sin límite de
+tiempo que dejaban "Sincronizando..." colgado. Además, cada guardado hacía
+3-5 llamadas en serie y después otro getAll completo.
+
+Desde v20:
+- sin recarga automática cada 30 s: se recarga al volver a la pestaña si
+  pasaron 3 min, o con "Actualizar" (que pide datos frescos, sin caché);
+- una sola carga a la vez (`cargaEnCurso`) y se descarta una carga que empezó
+  antes de un guardado;
+- `apiCall` corta a los 45 s (lecturas) / 90 s (escrituras) — las escrituras
+  NO se reintentan solas, para no duplicar;
+- backend: getAll en `CacheService` (se borra con cualquier escritura y con
+  `onEdit`; vence a los 10 min por si se borran filas a mano);
+- `escribir(...ops)` → acción `lote`: todas las escrituras de un guardado en
+  una llamada, con `LockService`, y la respuesta trae los datos actualizados.

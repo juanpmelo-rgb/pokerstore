@@ -148,7 +148,7 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
       <div class="sync-dot" id="sync-dot"></div>
       <span id="sync-text">Sincronizando...</span>
     </div>
-    <button class="btn-refresh" onclick="loadAll()">🔄 <span>Actualizar</span></button>
+    <button class="btn-refresh" onclick="loadAll(true)">🔄 <span>Actualizar</span></button>
   </div>
 </div>
 
@@ -1096,23 +1096,35 @@ let proveedores = [];
 let adjuntos = [];
 let precios = [];
 let clienteFiltro = '';
-let cajaGuille = 1512354;
-let cajaJuampi = 2401535;
+let cajaGuille = 0;   // se leen de Configuracion; nunca mostrar números inventados
+let cajaJuampi = 0;
 let retiroBaseGuille = 5400000;
 let retiroBaseJuampi = 4300000;
 let markups = {mayvol:2.4, mayest:2.7, retail:3.1, web:4.07};
 let currentTab = 'diario';
 
 // ── API ───────────────────────────────────────────────────────────────────────
-async function apiCall(body) {
+// timeout: Google a veces tarda 20 s en "despertar"; si pasa el límite se corta
+// para no quedar colgado en "Sincronizando..." para siempre.
+async function apiCall(body, opts) {
+  opts = opts || {};
   setSyncing(true);
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), opts.timeout || 90000);
   try {
-    const res = await fetch(API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(body),
-      redirect: 'follow'
-    });
+    let res;
+    try {
+      res = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(body),
+        redirect: 'follow',
+        signal: ctrl.signal
+      });
+    } catch(err){
+      if(err.name === 'AbortError') throw new Error('Google Sheets no respondió a tiempo');
+      throw err;
+    }
     const texto = await res.text();
     // Si Google devuelve HTML es porque pide login o el deploy no es público
     if(texto.trim().startsWith('<')){
@@ -1125,9 +1137,27 @@ async function apiCall(body) {
     return json;
   } catch(e) {
     setSyncing(false, true);
-    toast('Error de conexión con Google Sheets', 'err');
+    if(!opts.silencioso) toast('Error de conexión con Google Sheets', 'err');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Guarda varias cosas en UNA sola llamada (el backend las hace en orden) y
+// recibe los datos ya actualizados en la misma respuesta: no hace falta
+// volver a cargar todo después. Devuelve {ok, error, resultados}.
+async function escribir(...ops){
+  let r;
+  try {
+    r = await apiCall({action:'lote', ops, datos:true});
+  } catch(e) {
+    alert('⚠️ No se pudo confirmar si se guardó (' + e.message + ').\n\nTocá "Actualizar" y fijate si quedó cargado antes de volver a intentarlo, así no se duplica.');
     throw e;
   }
+  if(r.datos){ ultimaEscritura = Date.now(); aplicarDatos(r.datos); }
+  if(!r.ok) toast(r.error || 'No se pudo guardar', 'err');
+  return r;
 }
 
 function setSyncing(active, error=false) {
@@ -1145,11 +1175,42 @@ function setSyncing(active, error=false) {
   }
 }
 
-async function loadAll(intento) {
-  intento = intento || 1;
-  try {
-    const data = await apiCall({action:'getAll'});
+// Una sola carga a la vez: si ya hay una en curso, se espera esa (antes se
+// pisaban y a veces quedaba la respuesta más vieja). fresco=true saltea la
+// caché del backend (botón Actualizar).
+let cargaEnCurso = null;
+let ultimaCarga = 0, ultimaEscritura = 0;
+function loadAll(fresco) {
+  if(cargaEnCurso) return cargaEnCurso;
+  cargaEnCurso = cargarDatos(fresco === true).finally(()=>{ cargaEnCurso = null; });
+  return cargaEnCurso;
+}
+async function cargarDatos(fresco) {
+  for(let intento = 1; intento <= 3; intento++){
+    const inicio = Date.now();
+    try {
+      const data = await apiCall({action:'getAll', fresco}, {timeout:45000, silencioso: intento<3});
+      if(!data || data.ok === false) throw new Error((data && data.error) || 'Respuesta vacía');
+      // Si mientras tanto se guardó algo, esta respuesta ya está vieja
+      if(ultimaEscritura > inicio) return;
+      aplicarDatos(data);
+      ultimaCarga = Date.now();
+      toast('Datos actualizados');
+      return;
+    } catch(e) {
+      if(intento < 3){
+        console.warn(`Carga fallida (intento ${intento}/3), reintentando...`, e);
+        await new Promise(r=>setTimeout(r, 1500*intento));
+        continue;
+      }
+      document.getElementById('loading-overlay').style.display = 'none';
+      console.error('Error al cargar datos:', e);
+      mostrarErrorConexion(e);
+    }
+  }
+}
 
+function aplicarDatos(data) {
     // Procesar Libro Diario (fila 0 = headers)
     if(data.diario && data.diario.length > 1) {
       movimientos = data.diario.slice(1).map((r, idx) => ({
@@ -1316,26 +1377,16 @@ async function loadAll(intento) {
     const errBox = document.getElementById('error-conexion');
     if(errBox) errBox.remove();
     renderCurrentTab();
-    toast('Datos actualizados');
-  } catch(e) {
-    // FIX v26: Apps Script suele fallar la 1ª llamada tras un deploy nuevo.
-    // Reintentamos hasta 3 veces antes de molestar al usuario con el cartel.
-    if(intento < 3){
-      console.warn(`Carga fallida (intento ${intento}/3), reintentando...`);
-      await new Promise(r=>setTimeout(r, 900*intento));
-      return loadAll(intento+1);
-    }
-    document.getElementById('loading-overlay').style.display = 'none';
-    console.error('Error al cargar datos:', e);
-    mostrarErrorConexion(e);
-  }
 }
 
 // Muestra en pantalla qué falló al conectar, en vez de fallar en silencio
 function mostrarErrorConexion(e){
   const msg = String(e && e.message ? e.message : e);
   let causa, solucion;
-  if(/Failed to fetch|NetworkError|Load failed/i.test(msg)){
+  if(/no respondió a tiempo/i.test(msg)){
+    causa = 'Google Sheets tardó demasiado en responder (pasa a veces cuando Google está lento).';
+    solucion = 'Esperá un minuto y tocá Reintentar.';
+  } else if(/Failed to fetch|NetworkError|Load failed/i.test(msg)){
     causa = 'No se pudo contactar a Google Sheets.';
     solucion = 'Puede ser: (1) sin internet, (2) el Apps Script no está publicado como "Cualquier usuario", o (3) la URL del deploy cambió.';
   } else if(/Unexpected token|JSON|SyntaxError/i.test(msg)){
@@ -1357,12 +1408,16 @@ function mostrarErrorConexion(e){
       <strong>⚠️ No se pudieron cargar los datos del Google Sheet</strong><br>
       ${causa} ${solucion}<br>
       <span style="font-size:11px;opacity:.8">Detalle técnico: ${msg}</span>
-      <button onclick="this.parentNode.parentNode.remove(); loadAll();" style="margin-left:10px;padding:4px 10px;border:1px solid #8B1A10;background:transparent;color:#8B1A10;border-radius:6px;cursor:pointer">Reintentar</button>
+      <button onclick="this.parentNode.parentNode.remove(); loadAll(true);" style="margin-left:10px;padding:4px 10px;border:1px solid #8B1A10;background:transparent;color:#8B1A10;border-radius:6px;cursor:pointer">Reintentar</button>
     </div>`;
 }
 
-// Auto-refresh cada 30 segundos
-setInterval(() => { loadAll(); }, 30000);
+// Antes se recargaba TODO cada 30 s en cada pestaña abierta: Google se
+// saturaba y quedaba "Conectando...". Ahora se recarga al volver a la pestaña
+// si pasaron más de 3 minutos, y con el botón Actualizar.
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible' && Date.now() - Math.max(ultimaCarga, ultimaEscritura) > 3*60*1000) loadAll();
+});
 
 // ── UTILS ─────────────────────────────────────────────────────────────────────
 function fmt(n){ return '$' + Math.round(n).toLocaleString('es-AR'); }
@@ -1719,33 +1774,32 @@ async function addVenta(){
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
 
   try {
+    const ops = [];
     // 0. Dar de alta el cliente nuevo (consumidor final, no participa de La Liga)
     if(clienteNuevo){
-      const r = await apiCall({action:'addCliente', nombre:cliente, dni:'', sumaPuntos:'', tipo:'Consumidor final', telefono:'', email:'', localidad:'', ultconsulta:today(), notas:'', lista:'tienda'});
-      if(!r.ok){ toast(r.error||'No se pudo crear el cliente','err'); return; }
+      ops.push({action:'addCliente', nombre:cliente, dni:'', sumaPuntos:'', tipo:'Consumidor final', telefono:'', email:'', localidad:'', ultconsulta:today(), notas:'', lista:'tienda'});
     }
     // 1. Registrar la venta con todos los ítems en la descripción
-    await apiCall({action:'addVenta', fecha, canal, quien, cliente,
+    ops.push({action:'addVenta', fecha, canal, quien, cliente,
       producto: productoDesc, cantidad: cantidadTotal,
       monto, pago, estado, orden, evento});
-
     // 2. Descontar stock por cada ítem del carrito
     for(const item of carrito) {
-      if(item.productoObj) {
-        await apiCall({action:'updateStock', nombre: item.productoObj.nombre, delta: -item.cantidad});
-      }
+      if(item.productoObj) ops.push({action:'updateStock', nombre: item.productoObj.nombre, delta: -item.cantidad});
     }
-
     // 3. El cobro entra a la caja de quien vendió
-    await apiCall({action:'addMovimiento', fecha, desc:descCobroVenta(canal, productoDesc, cliente),
+    ops.push({action:'addMovimiento', fecha, desc:descCobroVenta(canal, productoDesc, cliente),
       cat:'Ventas', quien, tipo:'cobro', monto});
+
+    // Todo en una sola llamada (si falla el alta del cliente, no se guarda la venta)
+    const r = await escribir(...ops);
+    if(!r.ok) return;
 
     // Limpiar
     carrito = [];
     renderCarrito();
     ['v-cliente','v-prod-input','v-monto','v-orden','v-evento','v-fecha'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('v-prod-cantidad').value='1';
-    await loadAll();
     const ctaLiga = cuentaLigaDe(cliente);
     toast(ctaLiga && puntosDeMonto(monto)>0 ? `Venta registrada ✓ 🏆 ${ctaLiga.nombre} suma ${puntosDeMonto(monto)} pts` : 'Venta registrada ✓ Stock actualizado');
   } finally {
@@ -1762,9 +1816,10 @@ async function delVenta(i){
   if(iCobro>=0) msg += `\n\nTambién se saca su cobro de ${fmt(v.monto)} de la caja de ${v.quien}.`;
   else if(cobrada) msg += `\n\n⚠️ Su cobro ya se archivó en un cierre de mes (o no se encontró), así que sigue en la caja de ${v.quien}. Si devolviste la plata, cargá un gasto en el Libro Diario.`;
   if(!confirm(msg)) return;
-  await apiCall({action:'deleteVenta', row: v.fila-2});
-  if(iCobro>=0) await apiCall({action:'deleteMovimiento', row: movimientos[iCobro].fila-2});
-  await loadAll();
+  const ops = [{action:'deleteVenta', row: v.fila-2}];
+  if(iCobro>=0) ops.push({action:'deleteMovimiento', row: movimientos[iCobro].fila-2});
+  const r = await escribir(...ops);
+  if(!r.ok) return;
   toast(iCobro>=0 ? 'Venta y cobro eliminados' : 'Venta eliminada');
 }
 
@@ -1830,13 +1885,14 @@ async function guardarEdicionVenta(){
   const btn = document.getElementById('btn-guardar-venta');
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
   try {
-    await apiCall({action:'updateVenta', row:ant.fila-2, fecha, canal, quien, cliente, producto, cantidad, monto, pago, estado, orden, evento});
+    const ops = [{action:'updateVenta', row:ant.fila-2, fecha, canal, quien, cliente, producto, cantidad, monto, pago, estado, orden, evento}];
     const cobro = {fecha: normFechaPuntos(fecha)||fecha, desc:descCobroVenta(canal, producto, cliente), cat:'Ventas', quien, tipo:'cobro', monto, proveedor:''};
-    if(accionCobro==='agregar')    await apiCall({action:'addMovimiento', ...cobro});
-    if(accionCobro==='borrar')     await apiCall({action:'deleteMovimiento', row: movimientos[iCobro].fila-2});
-    if(accionCobro==='actualizar') await apiCall({action:'updateMovimiento', row: movimientos[iCobro].fila-2, ...cobro});
+    if(accionCobro==='agregar')    ops.push({action:'addMovimiento', ...cobro});
+    if(accionCobro==='borrar')     ops.push({action:'deleteMovimiento', row: movimientos[iCobro].fila-2});
+    if(accionCobro==='actualizar') ops.push({action:'updateMovimiento', row: movimientos[iCobro].fila-2, ...cobro});
+    const r = await escribir(...ops);
+    if(!r.ok) return;
     cerrarEdicionVenta();
-    await loadAll();
     toast(accionCobro ? 'Venta y caja actualizadas ✓' : 'Venta actualizada ✓');
   } finally {
     btn.disabled = false; btn.textContent = '💾 Guardar cambios';
@@ -1943,26 +1999,27 @@ async function registrarUSD(){
   const btn = document.getElementById('btn-usd');
   btn.disabled=true; btn.textContent='⏳ Guardando...';
   try{
+    const ops = [];
     if(op==='compra'){
       // Pata en pesos: sale de la caja del socio
-      await apiCall({action:'addMovimiento', fecha,
+      ops.push({action:'addMovimiento', fecha,
         desc:`Compra de dólares — USD ${usd.toLocaleString('es-AR')} @ ${fmt(cot)}${nota?' · '+nota:''}`,
         cat:'Compra de dólares', quien, tipo:'gasto', monto:ars});
       // Pata en dólares: entra al fondo
-      await apiCall({action:'addMovimiento', fecha,
+      ops.push({action:'addMovimiento', fecha,
         desc:`Ingreso al fondo USD — desde caja ${quien}${nota?' · '+nota:''}`,
         cat:'Fondo USD', quien:'usd', tipo:'cobro', monto:usd, proveedor:String(cot)});
       toast(`Compra registrada ✓ USD ${usd.toLocaleString('es-AR')} al fondo`);
     } else if(op==='uso'){
-      await apiCall({action:'addMovimiento', fecha,
+      ops.push({action:'addMovimiento', fecha,
         desc:`Pago importación — USD ${usd.toLocaleString('es-AR')}${nota?' · '+nota:''}`,
         cat:'Importación', quien:'usd', tipo:'gasto', monto:usd, proveedor:cot>0?String(cot):''});
       toast(`Pago registrado ✓ USD ${usd.toLocaleString('es-AR')}`);
     } else {
-      await apiCall({action:'addMovimiento', fecha,
+      ops.push({action:'addMovimiento', fecha,
         desc:`Venta de dólares — USD ${usd.toLocaleString('es-AR')} @ ${fmt(cot)}${nota?' · '+nota:''}`,
         cat:'Venta de dólares', quien:'usd', tipo:'gasto', monto:usd, proveedor:String(cot)});
-      await apiCall({action:'addMovimiento', fecha,
+      ops.push({action:'addMovimiento', fecha,
         desc:`Venta de dólares — USD ${usd.toLocaleString('es-AR')} @ ${fmt(cot)}${nota?' · '+nota:''}`,
         cat:'Venta de dólares', quien, tipo:'cobro', monto:ars});
       toast(`Venta registrada ✓ ${fmt(ars)} a caja ${quien}`);
@@ -1970,7 +2027,7 @@ async function registrarUSD(){
     document.getElementById('usd-monto').value='';
     document.getElementById('usd-nota').value='';
     document.getElementById('usd-preview').innerHTML='';
-    await loadAll();
+    if(!(await escribir(...ops)).ok) return;
     renderFondoUSD();
   } finally {
     btn.disabled=false; btn.textContent='+ Registrar';
@@ -2339,16 +2396,17 @@ async function registrarCanje(){
   const btn = document.getElementById('btn-canje');
   btn.disabled=true; btn.textContent='⏳ Registrando...';
   try{
+    const ops = [];
     // 1. Movimiento de puntos (quien='puntos' → no toca las cajas en pesos)
-    await apiCall({action:'addMovimiento', fecha,
+    ops.push({action:'addMovimiento', fecha,
       desc:`Canje puntos: ${cant}× ${prod.nombre}${quien?' — retiró '+quien:''}`,
       cat:'Canje puntos', quien:'puntos', tipo:'gasto', monto:total, proveedor:nombre});
     // 2. Descontar stock (misma firma que usa el registro de ventas)
-    await apiCall({action:'updateStock', nombre: prod.nombre, delta: -cant});
+    ops.push({action:'updateStock', nombre: prod.nombre, delta: -cant});
     document.getElementById('cj-cantidad').value='1';
     document.getElementById('cj-retiro').value='';
     document.getElementById('cj-preview').innerHTML='';
-    await loadAll();
+    if(!(await escribir(...ops)).ok) return;
     toast(`Canje registrado ✓ ${total} pts descontados`);
   } finally {
     btn.disabled=false; btn.textContent='✅ Registrar canje';
@@ -2788,22 +2846,23 @@ async function guardarMovimiento(){
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
 
   try {
+    const ops = [];
     // Crear proveedor al vuelo si es nuevo
     if(proveedor && !buscarProveedor(proveedor)){
-      await apiCall({action:'addProveedor', nombre:proveedor, provee:'', contacto:'', telefono:'', email:'', frecuencia:''});
+      ops.push({action:'addProveedor', nombre:proveedor, provee:'', contacto:'', telefono:'', email:'', frecuencia:''});
     }
     if(editMovIdx !== null){
-      await apiCall({action:'updateMovimiento', row:editMovIdx, fecha, desc, cat, quien, tipo, monto, proveedor});
+      ops.push({action:'updateMovimiento', row:editMovIdx, fecha, desc, cat, quien, tipo, monto, proveedor});
       cancelarEdicionMovimiento();
-      await loadAll();
+      if(!(await escribir(...ops)).ok) return;
       toast('Movimiento actualizado ✓');
     } else {
-      await apiCall({action:'addMovimiento', fecha, desc, cat, quien, tipo, monto, proveedor});
+      ops.push({action:'addMovimiento', fecha, desc, cat, quien, tipo, monto, proveedor});
       document.getElementById('d-desc').value='';
       document.getElementById('d-monto').value='';
       document.getElementById('d-fecha').value='';
       document.getElementById('d-proveedor').value='';
-      await loadAll();
+      if(!(await escribir(...ops)).ok) return;
       toast('Movimiento guardado en Google Sheets ✓');
     }
   } finally {
@@ -2813,8 +2872,7 @@ async function guardarMovimiento(){
 
 async function delMovimiento(i){
   if(!confirm('¿Eliminar este movimiento?')) return;
-  await apiCall({action:'deleteMovimiento', row: i});
-  await loadAll();
+  if(!(await escribir({action:'deleteMovimiento', row: i})).ok) return;
   toast('Movimiento eliminado');
 }
 
@@ -2878,9 +2936,10 @@ async function addProducto(){
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
 
   try {
-    await apiCall({action:'addProducto', nombre, cat, stock, costo, precio, minstock});
+    const ops = [];
+    ops.push({action:'addProducto', nombre, cat, stock, costo, precio, minstock});
     ['s-nombre','s-stock','s-costo','s-precio','s-minstock'].forEach(id=>document.getElementById(id).value='');
-    await loadAll();
+    if(!(await escribir(...ops)).ok) return;
     toast('Producto guardado en Google Sheets ✓');
   } finally {
     btn.disabled = false; btn.textContent = '+ Agregar';
@@ -2889,8 +2948,7 @@ async function addProducto(){
 
 async function delProducto(i){
   if(!confirm('¿Eliminar '+productos[i].nombre+'?')) return;
-  await apiCall({action:'deleteProducto', row: productos[i].fila - 2});
-  await loadAll();
+  if(!(await escribir({action:'deleteProducto', row: productos[i].fila - 2})).ok) return;
   toast('Producto eliminado');
 }
 
@@ -3868,16 +3926,14 @@ async function guardarCliente(){
   btn.disabled=true; btn.textContent='⏳...';
   try {
     if(editando){
-      const r = await apiCall({action:'updateCliente', row:editando.fila-2, ...datos, ultconsulta: editando.ultconsulta || today()});
-      if(!r.ok){ toast(r.error||'No se pudo guardar','err'); return; }
+      const r = await escribir({action:'updateCliente', row:editando.fila-2, ...datos, ultconsulta: editando.ultconsulta || today()});
+      if(!r.ok) return;
       cancelarEdicionCliente();
-      await loadAll();
       toast('Cliente actualizado ✓');
     } else {
-      const r = await apiCall({action:'addCliente', ...datos, ultconsulta:today()});
-      if(!r.ok){ toast(r.error||'No se pudo guardar','err'); return; }
+      const r = await escribir({action:'addCliente', ...datos, ultconsulta:today()});
+      if(!r.ok) return;
       cancelarEdicionCliente();
-      await loadAll();
       toast('Cliente agregado ✓');
     }
   } finally { btn.disabled=false; btn.textContent = editClienteIdx===null ? '+ Agregar' : '💾 Guardar cambios'; }
@@ -3889,8 +3945,7 @@ async function delCliente(i){
   const cta = cuentaLigaDe(c.nombre);
   const saldo = cta ? estadoCuenta(claveNombre(c.nombre)).saldo : 0;
   if(!confirm('¿Eliminar a '+c.nombre+'?'+(saldo>0?`\n\n⚠️ Tiene ${saldo.toLocaleString('es-AR')} puntos de La Liga: los pierde.`:''))) return;
-  await apiCall({action:'deleteCliente', row:c.fila-2});
-  await loadAll();
+  if(!(await escribir({action:'deleteCliente', row:c.fila-2})).ok) return;
   toast('Cliente eliminado');
 }
 
@@ -3983,11 +4038,12 @@ async function guardarRetiro(){
   const btn = document.getElementById('btn-add-retiro');
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
   try {
-    await apiCall({action:'addMovimiento', fecha, desc: nota || ('Retiro '+quien), cat:'Retiro socios', quien, tipo:'retiro', monto, proveedor:''});
+    const ops = [];
+    ops.push({action:'addMovimiento', fecha, desc: nota || ('Retiro '+quien), cat:'Retiro socios', quien, tipo:'retiro', monto, proveedor:''});
     document.getElementById('rt-monto').value='';
     document.getElementById('rt-nota').value='';
     document.getElementById('rt-fecha').value='';
-    await loadAll();
+    if(!(await escribir(...ops)).ok) return;
     toast('Retiro registrado ✓');
   } finally { btn.disabled=false; btn.textContent='+ Registrar retiro'; }
 }
