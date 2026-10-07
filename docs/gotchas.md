@@ -183,3 +183,22 @@ suman) y ahora:
 - solo suman ventas Pagadas/Entregadas.
 
 Los repetidos viejos se unieron una sola vez con `backend/UnificarClientes.gs`.
+
+## 11. Ventas y caja desincronizadas
+
+En octubre 2026 los saldos de caja "no daban". La cuenta del sistema estaba
+bien (cada cierre = saldo anterior + cobros − gastos − retiros, diferencia 0);
+lo que fallaba era la carga:
+- una venta cargada como "Abierto" y después pasada a "Pagado" nunca sumaba
+  su cobro (el cobro solo se creaba al registrar la venta);
+- borrar una venta dejaba su cobro en el Libro Diario;
+- editar el monto de una venta no tocaba el cobro;
+- con un filtro de canal activo, ✏️/🗑 usaban el índice de la lista filtrada
+  y editaban/borraban OTRA venta.
+
+Ahora toda venta nueva se registra como Pagado con su cobro, y editar o
+borrar una venta corrige su cobro si sigue en el Libro Diario (se busca con
+`idxCobroDeVenta()`: misma fecha, monto, quien y "Venta <canal>:"). Si ya se
+archivó en un cierre, la app avisa que hay que cargar el ajuste a mano.
+Ventas y movimientos guardan `fila` (número de fila en la hoja) y se editan
+por fila, no por posición en la lista.

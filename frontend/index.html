@@ -234,21 +234,16 @@ input:focus,select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
           <option value="Cuotas 6">Cuotas 6</option>
         </select>
       </div>
-      <div class="form-group"><label>Estado</label>
-        <select id="v-estado">
-          <option value="Abierto">🟡 Abierto</option>
-          <option value="Pagado">🔵 Pagado</option>
-          <option value="Entregado">🟢 Entregado</option>
-          <option value="Cancelado">🔴 Cancelado</option>
-        </select>
-      </div>
       <div class="form-group"><label>N° Orden / Ref</label><input type="text" id="v-orden" placeholder="Ej: #ML-123456"></div>
       <div class="form-group" id="v-evento-group"><label>Evento (Stand)</label><input type="text" id="v-evento" placeholder="Ej: CAP CityCenter Rosario"></div>
       <div style="display:flex;align-items:flex-end;gap:8px"><button class="btn-secondary" onclick="boletaDesdeCarrito()">📄 Boleta</button><button class="btn-primary" id="btn-add-venta" onclick="addVenta()">+ Registrar</button></div>
     </div>
   </div>
 
-  <div class="section-title">Historial de ventas</div>
+  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+    <span>Historial de ventas</span>
+    <select id="v-mes" onchange="mesVentas=this.value;renderVentas()" style="max-width:200px;text-transform:none;letter-spacing:0"></select>
+  </div>
   <div class="card-flat">
     <table>
       <thead><tr><th>Fecha</th><th>Canal</th><th>Quién</th><th>Cliente</th><th>Productos</th><th>Monto</th><th>Pago</th><th>Estado</th><th>Ref</th><th></th></tr></thead>
@@ -1093,6 +1088,7 @@ let movimientos = [];
 let productos = [];
 let ventas = [];
 let canalFiltro = '';
+let mesVentas = '';   // 'AAAA/MM', 'todos', o '' = mes actual
 let historico = [];
 let arqueos = [];
 let clientes = [];
@@ -1156,7 +1152,8 @@ async function loadAll(intento) {
 
     // Procesar Libro Diario (fila 0 = headers)
     if(data.diario && data.diario.length > 1) {
-      movimientos = data.diario.slice(1).map(r => ({
+      movimientos = data.diario.slice(1).map((r, idx) => ({
+        fila:  idx + 2,
         fecha: String(r[0]||''),
         desc:  String(r[1]||''),
         cat:   String(r[2]||''),
@@ -1185,7 +1182,9 @@ async function loadAll(intento) {
 
     // Procesar Ventas
     if(data.ventas && data.ventas.length > 1) {
-      ventas = data.ventas.slice(1).map(r => ({
+      // fila = número de fila en la hoja (para editar/borrar aunque se filtre la lista)
+      ventas = data.ventas.slice(1).map((r, idx) => ({
+        fila:     idx + 2,
         fecha:    String(r[0]||''),
         canal:    String(r[1]||''),
         quien:    String(r[2]||''),
@@ -1615,18 +1614,50 @@ function toggleEventoField(){
   document.getElementById('v-evento-group').style.display = canal === 'Stand' ? '' : 'none';
 }
 
+// ── VENTAS ↔ CAJA ──────────────────────────────────────────────────────────
+// Toda venta registrada ya está cobrada: suma su cobro al Libro Diario. Si
+// después se cancela, se borra o cambia el monto, el cobro se corrige también
+// (mientras siga en el Libro Diario; después del cierre de mes ya está archivado).
+const ESTADOS_COBRADOS = ['Pagado','Entregado'];
+function mesDeFecha(f){ const s = normFechaPuntos(f); return s ? s.slice(0,7).replace('-','/') : ''; }
+function fechaVista(f){ const s = normFechaPuntos(f); return s ? s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4) : (f||'—'); }
+function descCobroVenta(canal, producto, cliente){ return `Venta ${canal}: ${producto}${cliente?' — '+cliente:''}`; }
+// Índice en movimientos del cobro de esa venta, o -1 si no está en el Libro Diario actual
+function idxCobroDeVenta(v){
+  return movimientos.findIndex(m => m.tipo==='cobro' && m.quien===v.quien && Math.abs(m.monto-v.monto)<1
+    && m.desc.startsWith(`Venta ${v.canal}:`) && normFechaPuntos(m.fecha)===normFechaPuntos(v.fecha));
+}
+
+// La pestaña muestra un mes por vez (las ventas no se archivan: de acá salen
+// los puntos de La Liga y las fichas de clientes)
+function mesElegidoVentas(){
+  const actual = periodoDeDate(new Date());
+  const meses = [...new Set(ventas.map(v=>mesDeFecha(v.fecha)).filter(Boolean).concat(actual))].sort().reverse();
+  const elegido = mesVentas && (mesVentas==='todos' || meses.includes(mesVentas)) ? mesVentas : actual;
+  const sel = document.getElementById('v-mes');
+  if(sel){
+    sel.innerHTML = meses.map(m=>`<option value="${m}">${periodoLabel(m)}${m===actual?' (actual)':''}</option>`).join('')
+                  + '<option value="todos">Todos los meses</option>';
+    sel.value = elegido;
+  }
+  return elegido;
+}
+
 function renderVentas(){
   toggleEventoField();
-  const vf = canalFiltro ? ventas.filter(v=>v.canal===canalFiltro) : ventas;
+  const mes = mesElegidoVentas();
+  const delMes = mes==='todos' ? ventas : ventas.filter(v=>mesDeFecha(v.fecha)===mes);
+  const vf = canalFiltro ? delMes.filter(v=>v.canal===canalFiltro) : delMes;
   const totalMonto = vf.reduce((s,v)=>s+v.monto,0);
   const abiertos   = vf.filter(v=>v.estado==='Abierto').length;
   const byCanal    = {};
-  ventas.forEach(v=>{ byCanal[v.canal]=(byCanal[v.canal]||0)+v.monto; });
+  delMes.forEach(v=>{ byCanal[v.canal]=(byCanal[v.canal]||0)+v.monto; });
   const byQuien    = {};
-  ventas.forEach(v=>{ byQuien[v.quien]=(byQuien[v.quien]||0)+v.monto; });
+  delMes.forEach(v=>{ byQuien[v.quien]=(byQuien[v.quien]||0)+v.monto; });
+  const nombreMes  = mes==='todos' ? 'todos los meses' : periodoLabel(mes);
 
   document.getElementById('kpi-ventas').innerHTML = `
-    <div class="kpi"><div class="kpi-label">Total vendido${canalFiltro?' — '+canalFiltro:''}</div><div class="kpi-val pos">${fmt(totalMonto)}</div></div>
+    <div class="kpi"><div class="kpi-label">Total vendido ${nombreMes}${canalFiltro?' — '+canalFiltro:''}</div><div class="kpi-val pos">${fmt(totalMonto)}</div></div>
     <div class="kpi"><div class="kpi-label">Ventas Guille</div><div class="kpi-val neu">${fmt(byQuien['guille']||0)}</div></div>
     <div class="kpi"><div class="kpi-label">Ventas Juampi</div><div class="kpi-val neu">${fmt(byQuien['juampi']||0)}</div></div>
     <div class="kpi"><div class="kpi-label">Órdenes abiertas</div><div class="kpi-val ${abiertos>0?'neg':'pos'}">${abiertos}</div></div>
@@ -1634,10 +1665,10 @@ function renderVentas(){
   `;
 
   document.getElementById('tbody-ventas').innerHTML = vf.length === 0
-    ? `<tr><td colspan="10" style="text-align:center;color:var(--text3);padding:20px">Sin ventas registradas${canalFiltro?' en '+canalFiltro:''}.</td></tr>`
-    : vf.map((v,i)=>`
+    ? `<tr><td colspan="10" style="text-align:center;color:var(--text3);padding:20px">Sin ventas en ${nombreMes}${canalFiltro?' en '+canalFiltro:''}.</td></tr>`
+    : vf.slice().reverse().map(v=>{ const i = ventas.indexOf(v); return `
       <tr>
-        <td>${v.fecha}</td>
+        <td style="white-space:nowrap">${fechaVista(v.fecha)}</td>
         <td><span class="badge ${canalColors[v.canal]||'badge-blue'}">${v.canal}</span></td>
         <td><span class="badge ${v.quien==='guille'?'badge-blue':'badge-amber'}">${v.quien||'—'}</span></td>
         <td>${v.cliente ? `<a onclick="fichaCliente('${v.cliente.replace(/'/g,"\\'")}')" style="cursor:pointer;color:var(--blue);text-decoration:underline">${v.cliente}</a>` : '—'}</td>
@@ -1648,7 +1679,7 @@ function renderVentas(){
         <td style="font-size:11px;color:var(--text3)">${v.orden||v.evento||'—'}</td>
         <td style="white-space:nowrap"><button class="btn-edit" onclick="editVenta(${i})">✏️</button> <button class="btn-sm" onclick="delVenta(${i})">🗑</button></td>
       </tr>
-    `).join('');
+    `;}).join('');
 }
 
 async function addVenta(){
@@ -1658,7 +1689,7 @@ async function addVenta(){
   let   cliente = document.getElementById('v-cliente').value.trim();
   const monto   = parseFloat(document.getElementById('v-monto').value)||0;
   const pago    = document.getElementById('v-pago').value;
-  const estado  = document.getElementById('v-estado').value;
+  const estado  = 'Pagado';   // toda venta que se registra ya está cobrada
   const orden   = document.getElementById('v-orden').value.trim();
   const evento  = document.getElementById('v-evento').value.trim();
 
@@ -1707,11 +1738,9 @@ async function addVenta(){
       }
     }
 
-    // 3. Registrar en Diario si ya está pagado
-    if(estado === 'Pagado' || estado === 'Entregado') {
-      await apiCall({action:'addMovimiento', fecha, desc:`Venta ${canal}: ${productoDesc}${cliente?' — '+cliente:''}`,
-        cat:'Ventas', quien, tipo:'cobro', monto});
-    }
+    // 3. El cobro entra a la caja de quien vendió
+    await apiCall({action:'addMovimiento', fecha, desc:descCobroVenta(canal, productoDesc, cliente),
+      cat:'Ventas', quien, tipo:'cobro', monto});
 
     // Limpiar
     carrito = [];
@@ -1726,10 +1755,18 @@ async function addVenta(){
 }
 
 async function delVenta(i){
-  if(!confirm('¿Eliminar esta venta?')) return;
-  await apiCall({action:'deleteVenta', row: i});
+  const v = ventas[i];
+  if(!v) return;
+  const cobrada = ESTADOS_COBRADOS.includes(v.estado);
+  const iCobro  = cobrada ? idxCobroDeVenta(v) : -1;
+  let msg = `¿Eliminar la venta de ${fmt(v.monto)}${v.cliente?' a '+v.cliente:''}?`;
+  if(iCobro>=0) msg += `\n\nTambién se saca su cobro de ${fmt(v.monto)} de la caja de ${v.quien}.`;
+  else if(cobrada) msg += `\n\n⚠️ Su cobro ya se archivó en un cierre de mes (o no se encontró), así que sigue en la caja de ${v.quien}. Si devolviste la plata, cargá un gasto en el Libro Diario.`;
+  if(!confirm(msg)) return;
+  await apiCall({action:'deleteVenta', row: v.fila-2});
+  if(iCobro>=0) await apiCall({action:'deleteMovimiento', row: movimientos[iCobro].fila-2});
   await loadAll();
-  toast('Venta eliminada');
+  toast(iCobro>=0 ? 'Venta y cobro eliminados' : 'Venta eliminada');
 }
 
 let editVentaIdx = null;
@@ -1770,14 +1807,38 @@ async function guardarEdicionVenta(){
   const estado   = document.getElementById('ev-estado').value;
   const orden    = document.getElementById('ev-orden').value.trim();
   const evento   = document.getElementById('ev-evento').value.trim();
-  const cantidad = ventas[editVentaIdx] ? ventas[editVentaIdx].cantidad : 1;
+  const ant = ventas[editVentaIdx];
+  if(!ant) return;
+  const cantidad = ant.cantidad;
+
+  // Mantener la caja en línea con la venta
+  const antCobrada = ESTADOS_COBRADOS.includes(ant.estado);
+  const nuevaCobrada = ESTADOS_COBRADOS.includes(estado);
+  const iCobro = antCobrada ? idxCobroDeVenta(ant) : -1;
+  const cambioCaja = Math.abs(ant.monto-monto)>=1 || ant.quien!==quien;
+  let accionCobro = null;   // 'agregar' | 'borrar' | 'actualizar'
+  if(!antCobrada && nuevaCobrada){
+    if(confirm(`La venta pasa a ${estado}.\n\n¿Sumar el cobro de ${fmt(monto)} a la caja de ${quien}?`)) accionCobro = 'agregar';
+  } else if(antCobrada && !nuevaCobrada){
+    if(iCobro>=0){
+      if(confirm(`La venta pasa a ${estado}.\n\n¿Sacar su cobro de ${fmt(ant.monto)} de la caja de ${ant.quien}?`)) accionCobro = 'borrar';
+    } else alert(`⚠️ El cobro de esta venta ya se archivó en un cierre de mes (o no se encontró), así que sigue en la caja de ${ant.quien}.\n\nSi devolviste la plata, cargá un gasto en el Libro Diario.`);
+  } else if(antCobrada && nuevaCobrada){
+    if(iCobro>=0) accionCobro = 'actualizar';
+    else if(cambioCaja) alert(`⚠️ El cobro de esta venta ya se archivó en un cierre de mes (o no se encontró), así que la caja no cambia.\n\nSi cambió el monto o quién cobró, cargá el ajuste en el Libro Diario.`);
+  }
+
   const btn = document.getElementById('btn-guardar-venta');
   btn.disabled = true; btn.textContent = '⏳ Guardando...';
   try {
-    await apiCall({action:'updateVenta', row:editVentaIdx, fecha, canal, quien, cliente, producto, cantidad, monto, pago, estado, orden, evento});
+    await apiCall({action:'updateVenta', row:ant.fila-2, fecha, canal, quien, cliente, producto, cantidad, monto, pago, estado, orden, evento});
+    const cobro = {fecha: normFechaPuntos(fecha)||fecha, desc:descCobroVenta(canal, producto, cliente), cat:'Ventas', quien, tipo:'cobro', monto, proveedor:''};
+    if(accionCobro==='agregar')    await apiCall({action:'addMovimiento', ...cobro});
+    if(accionCobro==='borrar')     await apiCall({action:'deleteMovimiento', row: movimientos[iCobro].fila-2});
+    if(accionCobro==='actualizar') await apiCall({action:'updateMovimiento', row: movimientos[iCobro].fila-2, ...cobro});
     cerrarEdicionVenta();
     await loadAll();
-    toast('Venta actualizada ✓');
+    toast(accionCobro ? 'Venta y caja actualizadas ✓' : 'Venta actualizada ✓');
   } finally {
     btn.disabled = false; btn.textContent = '💾 Guardar cambios';
   }
