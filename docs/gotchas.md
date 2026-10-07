@@ -202,3 +202,8 @@ borrar una venta corrige su cobro si sigue en el Libro Diario (se busca con
 archivó en un cierre, la app avisa que hay que cargar el ajuste a mano.
 Ventas y movimientos guardan `fila` (número de fila en la hoja) y se editan
 por fila, no por posición en la lista.
+
+Actualización (7/10/2026): La Liga quedó solo para clubes, peñas y
+mayoristas (`participaLiga()`). El DNI se pide solo a esas cuentas, que se
+crean desde la pestaña Clientes; la venta vuelve a dar de alta sola a los
+clientes nuevos como consumidor final, sin DNI y sin puntos.
